@@ -78,15 +78,19 @@ Git 安装 = 安装端直接从 GitHub 仓库按 **commit SHA** 拉取，**不�
 3. Discover 里找到"文件行引用"→ 安装 → 刷新页面。
 4. 不想装市场组件的话，也可以直接 `install_bundle`：git 模式给 spec `git+https://github.com/dybai/file-line-reference.git#<SHA>`；npm 模式给 `@dybai/file-line-reference@X.Y.Z`。
 
-## 6. 可选：npm 发布路径
+## 6. npm 发布路径（已验证 ✓，v1.0.0 已在 npmjs 上线）
 
-npm 模式的安装物是 tarball，更轻，但需要账号与发布权：
+npm 模式的安装物是 tarball，更轻，但需要账号与发布权（scope 名必须等于你的 npm 用户名，或你拥有的组织名）：
 
-1. `npm login`（确保 `@dybai` scope 归你所有；公共 scope 免费）。
-2. `npm publish --access public` —— **scoped 包默认 restricted，漏掉 `--access public` 别人就装不了**。
-3. 市场索引里该版本的 `source` 写 `{ "type": "npm" }`（省略 `registry` = 安装方默认 registry）。
-4. 发版顺序：版本号 → build → 测试 → publish → 索引追加版本 → push 索引。
-5. GitHub Release 可附 `npm pack` 产物存档（市场不直接消费它，仅作备份）。
+1. `npm whoami` 确认登录身份与 scope 匹配（当前为 `dybai`）。
+2. `npm pack --dry-run` 核对包内容：应只有 `package.json / LICENSE / README.md / index.js / client.js / cordis.patch.yml / locale/*.json / icon.svg`，不应出现 `src/ test/ scripts/ docs/ market-index.json`。
+3. `npm publish --access public` —— **scoped 包默认 restricted，漏掉 `--access public` 别人装不了**；另外：
+   - 开了 2FA 的账号会报 **EOTP**：用 `npm publish --access public --otp <验证器6位码>`，或按提示走浏览器认证；
+   - 成功标志是输出 `+ @dybai/file-line-reference@X.Y.Z`，且含 `Publishing to https://registry.npmjs.org/ with tag latest and public access` 一行；
+   - **不要把 `--dry-run` 当作发布**——`npm publish --dry-run` 打印同样的 `+ 包名@版本` 样式，但并不真正上传。
+4. 发布成功后 `npm view @dybai/file-line-reference` 复核；**新 scoped 包可能出现几分钟的 404（CDN 传播延迟），属正常**——再次 publish 报 `EPUBLISHCONFLICT`（cannot publish over previously published versions）恰恰证明已经发上去了。
+5. 市场索引里新版本的 `source` 写 `{ "type": "npm" }`（省略 `registry` = 安装方默认 registry）；v1.0.0 保持 git 来源不动。
+6. GitHub Release 可附 `npm pack` 产物存档（市场不直接消费它，仅作备份）。
 
 ## 7. market-index.json 字段速查
 
@@ -109,6 +113,7 @@ npm 模式的安装物是 tarball，更轻，但需要账号与发布权：
 - **索引 URL 必须 http(s)、无凭据、无 fragment**；`raw.githubusercontent.com` 的 main 链接即可。
 - **`engines.dsh` 不匹配**：安装界面会标不兼容；确要强装需在插件管理里做版本豁免（有崩溃风险）。
 - **升级判定**：市场按"包名 + 版本比较"给出 `update-available`，所以每次发版务必递增 `package.json` 的 `version`。
+- **npm 渠道三连**：EOTP = 开了 2FA，加 `--otp` 或走浏览器认证；EPUBLISHCONFLICT = 这个版本已经发过了（想清楚是要改版本号还是只是核对）；刚发布完 `npm view` 404 = CDN 传播延迟，等几分钟。
 - 已发送消息里的行引用以规则 id `file-lines` 持久化——**永远不要改这个 id**，否则历史消息的 chip 不再渲染。
 
 ## 9. 当前版本历史
