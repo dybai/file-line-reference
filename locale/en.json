@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "File Line Reference",
+    "description": "Select file lines and insert @path:start-end references into the chat composer; click a reference chip in a message to reopen the file at its start line. Currently supports the sidebar file preview."
+  }
+}

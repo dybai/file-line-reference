@@ -1,0 +1,38 @@
+{
+  "name": "@dybai/file-line-reference",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Select file lines and add @path:start-end line-range references to the chat composer; click a reference chip to reopen the file at its start line",
+  "scripts": {
+    "test": "node --test",
+    "build": "node scripts/build.mjs"
+  },
+  "engines": {
+    "dsh": ">=0.2.1-rc.5"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dybai/file-line-reference.git"
+  },
+  "keywords": ["dsh", "deepseek-harness", "line-reference", "file-preview"],
+  "license": "MIT",
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar-documentpreview"
+      ]
+    }
+  }
+}

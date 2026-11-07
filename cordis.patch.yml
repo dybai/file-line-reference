@@ -1,0 +1,3 @@
+- insert:
+    - id: file-line-reference
+      name: '@dybai/file-line-reference'

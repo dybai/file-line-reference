@@ -1,0 +1,61 @@
+{
+  "format": 1,
+  "title": {
+    "en": "dybai's dsh plugins",
+    "zh-cn": "dybai 的 dsh 插件"
+  },
+  "description": {
+    "en": "Personal plugin market for the DeepSeek Harness.",
+    "zh-cn": "DeepSeek Harness 个人插件市场。"
+  },
+  "metadata": {
+    "categories": {
+      "productivity": {
+        "title": {
+          "en": "Productivity",
+          "zh-cn": "效率"
+        }
+      }
+    },
+    "labels": {},
+    "sortKeys": {}
+  },
+  "plugins": [
+    {
+      "name": "@dybai/file-line-reference",
+      "title": {
+        "en": "File Line Reference",
+        "zh-cn": "文件行引用"
+      },
+      "description": {
+        "en": "Select file lines and insert @path:start-end references into the chat composer; click a reference chip to reopen the file at its start line. Currently supports the sidebar file preview.",
+        "zh-cn": "选中文件的若干行，把 @路径:起-止 行范围引用插入对话输入框；点击消息中的引用 chip 回到起始行。当前支持侧栏文件预览。"
+      },
+      "author": "dybai",
+      "homepage": "https://github.com/dybai/file-line-reference",
+      "repository": {
+        "url": "https://github.com/dybai/file-line-reference"
+      },
+      "metadata": {
+        "category": "productivity",
+        "keywords": ["dsh", "line-reference", "file-preview"],
+        "labels": [],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "1.0.0",
+          "publishTimestamp": 0,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/dybai/file-line-reference",
+            "commit": "0000000000000000000000000000000000000000"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.5"
+          }
+        }
+      ]
+    }
+  ]
+}
