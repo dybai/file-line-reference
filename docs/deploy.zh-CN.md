@@ -35,7 +35,7 @@ file-line-reference/
 node scripts/build.mjs        # 重新生成 client.js（改了 src/ 之后必须跑）
 node --check client.js        # 语法检查
 node scripts/verify-loader.mjs # 模拟 DSH ModuleLoader 契约（factory(require) → exports）
-node --test                   # 纯逻辑单测（15 个）
+node --test                   # 纯逻辑单测（23 个）
 ```
 
 然后在 DSH 里用 `install_bundle` 以**本地目录**安装（或已经装过时直接刷新页面，服务器按文件内容计算修订，无需重启 harness），浏览器 **Ctrl+F5** 验证。
@@ -120,4 +120,5 @@ npm 模式的安装物是 tarball，更轻，但需要账号与发布权（scope
 
 | 版本 | 内容 |
 | --- | --- |
+| 1.1.0 | 新增文件/目录拖拽：从 Files 面板拖到输入框插入纯 `@路径` 引用（目录带尾 `/`、含空格加引号）；Files 标题栏拖拽开关默认开启；与 dsh-file-drag 同时安装时主动让位 |
 | 1.0.0 | 首个公开版本：划选/行选 → `@路径:起-止` 插入草稿（Ctrl+Shift+L 或工具栏按钮）、纯文本预览行号开关、引用 chip 点击跳转起始行 |

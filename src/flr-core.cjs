@@ -168,6 +168,7 @@
 	 * @returns the mention text, or '' when nothing is representable.
 	 */
 	function mentionForPath(path, kind, cwd) {
+		if (typeof path !== 'string' || path.length === 0) return '';
 		const relative = relativeMentionPath(path, cwd);
 		if (relative === '') return '';
 		return formatPlainMention(relative, kind);
@@ -200,6 +201,23 @@
 	 */
 	function readToggleState(stored) {
 		return stored !== '0';
+	}
+
+	/**
+	 * Decide what one drag event may do.
+	 *
+	 * `yield` wins over every other answer so an installed dsh-file-drag keeps
+	 * its own drop; otherwise the drop is ours only when the payload is ready
+	 * and the target composer belongs to the Session the row came from.
+	 * @param input - foreign payload flag, payload readiness, and both Sessions.
+	 * @returns `'yield'`, `'insert'`, or `'ignore'`.
+	 */
+	function dragVerdict(input) {
+		if (input === null || typeof input !== 'object' || input.foreign === true) return 'yield';
+		if (input.ready !== true) return 'ignore';
+		if (typeof input.sourceSession !== 'string' || input.sourceSession === '') return 'ignore';
+		if (input.targetSession !== input.sourceSession) return 'ignore';
+		return 'insert';
 	}
 
 	/** Component-encode one address segment, keeping `:` literal for drive letters. */
@@ -272,6 +290,7 @@
 		mentionForPath,
 		parseDraggedPath,
 		readToggleState,
+		dragVerdict,
 		fileAddress,
 		padInsertion
 	};

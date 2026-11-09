@@ -176,3 +176,20 @@ test('readToggleState defaults to enabled and only the stored zero disables', ()
   assert.equal(core.readToggleState('0'), false);
   assert.equal(core.readToggleState('yes'), true);
 });
+
+test('mentionForPath refuses a missing path instead of naming "undefined"', () => {
+  assert.equal(core.mentionForPath(undefined, 'file', 'E:\\t'), '');
+  assert.equal(core.mentionForPath(null, 'file', undefined), '');
+  assert.equal(core.mentionForPath('', 'directory', undefined), '');
+});
+
+test('dragVerdict yields first, then requires one ready and matching Session', () => {
+  const ok = { sourceSession: 's-1', targetSession: 's-1', foreign: false, ready: true };
+  assert.equal(core.dragVerdict(ok), 'insert');
+  assert.equal(core.dragVerdict({ ...ok, foreign: true }), 'yield');
+  assert.equal(core.dragVerdict({ ...ok, sourceSession: null }), 'ignore');
+  assert.equal(core.dragVerdict({ ...ok, targetSession: null }), 'ignore');
+  assert.equal(core.dragVerdict({ ...ok, targetSession: 's-2' }), 'ignore');
+  assert.equal(core.dragVerdict({ ...ok, targetSession: 'S-1' }), 'ignore');
+  assert.equal(core.dragVerdict({ ...ok, ready: false }), 'ignore');
+});

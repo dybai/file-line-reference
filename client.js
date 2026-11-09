@@ -159,6 +159,7 @@ window.__ModuleLoader__.load({
 	 * @returns the mention text, or '' when nothing is representable.
 	 */
 	function mentionForPath(path, kind, cwd) {
+		if (typeof path !== 'string' || path.length === 0) return '';
 		const relative = relativeMentionPath(path, cwd);
 		if (relative === '') return '';
 		return formatPlainMention(relative, kind);
@@ -191,6 +192,23 @@ window.__ModuleLoader__.load({
 	 */
 	function readToggleState(stored) {
 		return stored !== '0';
+	}
+
+	/**
+	 * Decide what one drag event may do.
+	 *
+	 * `yield` wins over every other answer so an installed dsh-file-drag keeps
+	 * its own drop; otherwise the drop is ours only when the payload is ready
+	 * and the target composer belongs to the Session the row came from.
+	 * @param input - foreign payload flag, payload readiness, and both Sessions.
+	 * @returns `'yield'`, `'insert'`, or `'ignore'`.
+	 */
+	function dragVerdict(input) {
+		if (input === null || typeof input !== 'object' || input.foreign === true) return 'yield';
+		if (input.ready !== true) return 'ignore';
+		if (typeof input.sourceSession !== 'string' || input.sourceSession === '') return 'ignore';
+		if (input.targetSession !== input.sourceSession) return 'ignore';
+		return 'insert';
 	}
 
 	/** Component-encode one address segment, keeping `:` literal for drive letters. */
@@ -263,6 +281,7 @@ window.__ModuleLoader__.load({
 		mentionForPath,
 		parseDraggedPath,
 		readToggleState,
+		dragVerdict,
 		fileAddress,
 		padInsertion
 	};
@@ -646,17 +665,21 @@ const DROP_TARGET_CLASS = 'flr-drop-target';
  * The Files tree exposes no drag source, so this reads its stable DOM contract
  * (`[data-files-entry]` + `[data-files-path]`): a delegated `pointerdown` sets
  * `draggable` on the row just before the gesture can start, `dragstart` carries
- * the path over a private MIME type, and `drop` only acts inside the composer.
- * The feature is off when the persisted toggle says so — then no row is armed
- * and no drop is claimed.
+ * the path over a private MIME type, and `drop` only acts inside the composer
+ * of the row's OWN Session (`[data-conversation-session]` must match
+ * `[data-sidebar-right-session]`), so a side conversation or another Session's
+ * composer never receives the wrong draft. The persisted toggle gates
+ * everything: while off, no document listener is attached at all.
  */
 const dragger = (() => {
-	const state = { enabled: true, session: null };
+	const state = { enabled: true, sessions: new Map() };
 	const listeners = new Set();
-	let attached = 0;
+	let mounted = 0;
+	let listening = false;
 	let armed = null;
 	let dropTarget = null;
 	let dragging = false;
+	let draggedSession = null;
 
 	try {
 		state.enabled = FlrCore.readToggleState(window.localStorage.getItem(DRAG_STORAGE_KEY));
@@ -687,6 +710,17 @@ const dragger = (() => {
 		return element ? element.closest('[contenteditable="true"]') : null;
 	}
 
+	/** The nearest ancestor carrying `attribute`, or null when absent. */
+	function attributeOf(element, selector, attribute) {
+		const owner = element.closest(selector);
+		return owner instanceof Element ? owner.getAttribute(attribute) : null;
+	}
+
+	/** The Session a composer belongs to; drop targets must match the drag source. */
+	function sessionOfComposer(composer) {
+		return attributeOf(composer, '[data-conversation-session]', 'data-conversation-session');
+	}
+
 	function disarm() {
 		if (armed === null) return;
 		if (armed.wasDraggable === null) armed.element.removeAttribute('draggable');
@@ -697,7 +731,11 @@ const dragger = (() => {
 	function arm(row) {
 		if (armed !== null && armed.element === row) return;
 		disarm();
-		armed = { element: row, wasDraggable: row.getAttribute('draggable') };
+		armed = {
+			element: row,
+			wasDraggable: row.getAttribute('draggable'),
+			sessionId: attributeOf(row, '[data-sidebar-right-session]', 'data-sidebar-right-session')
+		};
 		row.setAttribute('draggable', 'true');
 	}
 
@@ -707,41 +745,71 @@ const dragger = (() => {
 		dropTarget = null;
 	}
 
+	/** End the gesture in every direction: flags, highlight and the armed row. */
+	function finishDrag() {
+		dragging = false;
+		draggedSession = null;
+		clearDropTarget();
+		disarm();
+	}
+
 	function onPointerDown(event) {
 		if (!state.enabled || event.button !== 0) return;
 		const row = rowOf(event.target);
+		// A press anywhere else retires a stale row from an interrupted gesture.
 		if (row !== null) arm(row);
+		else disarm();
 	}
 
 	function onPointerUp() {
 		if (!dragging) disarm();
 	}
 
+	function onPointerCancel() {
+		finishDrag();
+	}
+
 	function onDragStart(event) {
 		if (!state.enabled || armed === null) return;
+		// Only the row armed by the preceding pointerdown may start our drag;
+		// any other drag on the page leaves this gesture untouched.
+		if (event.target !== armed.element && !armed.element.contains(event.target)) return;
+		if (armed.sessionId === null) return;
 		const path = armed.element.getAttribute('data-files-path');
 		const kind = armed.element.getAttribute('data-files-entry') ?? 'file';
 		if (path === null || path === '') return;
-		dragging = true;
+		const transfer = event.dataTransfer;
+		if (!transfer) return;
 		try {
-			event.dataTransfer?.setData(DRAG_MIME, JSON.stringify({ path, kind }));
-			if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copy';
+			transfer.setData(DRAG_MIME, JSON.stringify({ path, kind }));
+			transfer.effectAllowed = 'copy';
 		} catch (error) {
-			// No writable DataTransfer: leave `dragging` false so no drop is claimed.
-			dragging = false;
 			console.warn('[file-line-reference] drag payload rejected:', error);
+			finishDrag();
+			return;
 		}
+		dragging = true;
+		draggedSession = armed.sessionId;
 	}
 
 	function onDragOver(event) {
 		if (!state.enabled || !dragging) return;
 		const composer = composerOf(event.target);
-		if (composer === null) {
+		const transfer = event.dataTransfer;
+		const verdict = FlrCore.dragVerdict({
+			sourceSession: draggedSession,
+			targetSession: composer === null ? null : sessionOfComposer(composer),
+			foreign: transfer !== null && Array.prototype.includes.call(transfer.types, FOREIGN_DRAG_MIME),
+			ready: true
+		});
+		// A foreign payload or a composer of another Session stays inert: no
+		// preventDefault, no copy cursor, no highlight.
+		if (verdict !== 'insert' || composer === null) {
 			clearDropTarget();
 			return;
 		}
 		event.preventDefault();
-		if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+		if (transfer) transfer.dropEffect = 'copy';
 		if (dropTarget !== composer) {
 			clearDropTarget();
 			dropTarget = composer;
@@ -749,34 +817,35 @@ const dragger = (() => {
 		}
 	}
 
-	function onDragLeave(event) {
-		if (dropTarget === null) return;
-		// Only a leave that lands outside the composer clears the highlight.
-		const next = event.relatedTarget;
-		if (next instanceof Node && dropTarget.contains(next)) return;
-		clearDropTarget();
-	}
-
 	function onDragEnd() {
-		dragging = false;
-		clearDropTarget();
-		disarm();
+		finishDrag();
 	}
 
 	/** Insert one dragged path at the caret; false when the composer refused it. */
-	function insert(payload) {
-		const session = state.session;
-		if (session === null || !session.inputActions) return false;
-		const mention = FlrCore.mentionForPath(payload.path, payload.kind, sessionCwd(session.sessionId));
-		if (mention === '') return false;
-		const actions = session.inputActions;
-		const span = actions.captureInsertion();
-		if (!actions.insertText(FlrCore.padInsertion('', span.start, mention), span)) {
-			const retry = actions.captureInsertion();
-			if (!actions.insertText(FlrCore.padInsertion('', retry.start, mention), retry)) {
-				console.warn('[file-line-reference] composer rejected the dragged reference');
-				return false;
+	function insert(sessionId, payload) {
+		const entry = state.sessions.get(sessionId);
+		if (entry === undefined || !entry.inputActions) {
+			console.warn('[file-line-reference] no composer registered for the dragged file');
+			return false;
+		}
+		const mention = FlrCore.mentionForPath(payload.path, payload.kind, sessionCwd(sessionId));
+		if (mention === '') {
+			console.warn('[file-line-reference] dragged path cannot be represented as an @ reference');
+			return false;
+		}
+		const actions = entry.inputActions;
+		try {
+			const span = actions.captureInsertion();
+			if (!actions.insertText(FlrCore.padInsertion('', span.start, mention), span)) {
+				const retry = actions.captureInsertion();
+				if (!actions.insertText(FlrCore.padInsertion('', retry.start, mention), retry)) {
+					console.warn('[file-line-reference] composer rejected the dragged reference');
+					return false;
+				}
 			}
+		} catch (error) {
+			console.warn('[file-line-reference] dragged reference insertion failed:', error);
+			return false;
 		}
 		return true;
 	}
@@ -784,22 +853,52 @@ const dragger = (() => {
 	function onDrop(event) {
 		if (!state.enabled || !dragging) return;
 		const transfer = event.dataTransfer;
-		if (transfer === null) return;
-		// dsh-file-drag claims the same rows; yielding keeps one drop to one insert.
-		if (Array.prototype.includes.call(transfer.types, FOREIGN_DRAG_MIME)) {
-			clearDropTarget();
+		if (!transfer) {
+			finishDrag();
 			return;
 		}
 		const payload = FlrCore.parseDraggedPath(transfer.getData(DRAG_MIME));
 		const composer = composerOf(event.target);
-		if (payload === null || composer === null) {
-			clearDropTarget();
-			return;
-		}
+		const sourceSession = draggedSession;
+		const verdict = FlrCore.dragVerdict({
+			sourceSession,
+			targetSession: composer === null ? null : sessionOfComposer(composer),
+			foreign: Array.prototype.includes.call(transfer.types, FOREIGN_DRAG_MIME),
+			ready: payload !== null
+		});
+		finishDrag();
+		if (verdict !== 'insert' || payload === null || sourceSession === null) return;
 		event.preventDefault();
 		event.stopPropagation();
-		clearDropTarget();
-		insert(payload);
+		insert(sourceSession, payload);
+	}
+
+	/** Attach the document listeners exactly while the feature is enabled. */
+	function attach() {
+		if (listening) return;
+		listening = true;
+		document.addEventListener('pointerdown', onPointerDown, true);
+		document.addEventListener('pointerup', onPointerUp, true);
+		document.addEventListener('pointercancel', onPointerCancel, true);
+		document.addEventListener('dragstart', onDragStart, true);
+		document.addEventListener('dragover', onDragOver, true);
+		document.addEventListener('drop', onDrop, true);
+		document.addEventListener('dragend', onDragEnd, true);
+		window.addEventListener('blur', onDragEnd);
+	}
+
+	function detach() {
+		if (!listening) return;
+		listening = false;
+		document.removeEventListener('pointerdown', onPointerDown, true);
+		document.removeEventListener('pointerup', onPointerUp, true);
+		document.removeEventListener('pointercancel', onPointerCancel, true);
+		document.removeEventListener('dragstart', onDragStart, true);
+		document.removeEventListener('dragover', onDragOver, true);
+		document.removeEventListener('drop', onDrop, true);
+		document.removeEventListener('dragend', onDragEnd, true);
+		window.removeEventListener('blur', onDragEnd);
+		finishDrag();
 	}
 
 	return {
@@ -814,49 +913,40 @@ const dragger = (() => {
 			} catch {
 				// Storage unavailable: the toggle stays session-local.
 			}
-			dragging = false;
-			clearDropTarget();
-			disarm();
+			if (on) {
+				if (mounted > 0) attach();
+			} else {
+				detach();
+			}
 			notify();
 		},
-		/** Register the mounted Files page's session so a drop can reach its composer. */
-		setSession(sessionId, inputActions) {
-			const session = { sessionId, inputActions };
-			state.session = session;
+		/** Register one mounted Files page's Session; released by its own unmount. */
+		registerSession(sessionId, inputActions) {
+			if (sessionId === undefined || sessionId === null) return () => {};
+			let entry = state.sessions.get(sessionId);
+			if (entry === undefined) {
+				entry = { inputActions, refs: 0 };
+				state.sessions.set(sessionId, entry);
+			}
+			entry.inputActions = inputActions;
+			entry.refs += 1;
+			let released = false;
 			return () => {
-				if (state.session === session) state.session = null;
+				if (released) return;
+				released = true;
+				const current = state.sessions.get(sessionId);
+				if (current === undefined) return;
+				current.refs -= 1;
+				if (current.refs <= 0) state.sessions.delete(sessionId);
 			};
 		},
 		/** Refcounted document listeners, alive while a Files page is mounted. */
 		retain() {
-			attached += 1;
-			if (attached === 1) {
-				document.addEventListener('pointerdown', onPointerDown, true);
-				document.addEventListener('pointerup', onPointerUp, true);
-				document.addEventListener('pointercancel', onPointerUp, true);
-				document.addEventListener('dragstart', onDragStart, true);
-				document.addEventListener('dragover', onDragOver, true);
-				document.addEventListener('dragleave', onDragLeave, true);
-				document.addEventListener('drop', onDrop, true);
-				document.addEventListener('dragend', onDragEnd, true);
-				window.addEventListener('blur', onDragEnd);
-			}
+			mounted += 1;
+			if (mounted === 1 && state.enabled) attach();
 			return () => {
-				attached -= 1;
-				if (attached === 0) {
-					document.removeEventListener('pointerdown', onPointerDown, true);
-					document.removeEventListener('pointerup', onPointerUp, true);
-					document.removeEventListener('pointercancel', onPointerUp, true);
-					document.removeEventListener('dragstart', onDragStart, true);
-					document.removeEventListener('dragover', onDragOver, true);
-					document.removeEventListener('dragleave', onDragLeave, true);
-					document.removeEventListener('drop', onDrop, true);
-					document.removeEventListener('dragend', onDragEnd, true);
-					window.removeEventListener('blur', onDragEnd);
-					dragging = false;
-					clearDropTarget();
-					disarm();
-				}
+				mounted -= 1;
+				if (mounted === 0) detach();
 			};
 		}
 	};
@@ -1063,7 +1153,7 @@ function DragToggle(props) {
 	React.useEffect(dragger.retain, []);
 	React.useEffect(() => dragger.subscribe(force), [force]);
 	React.useEffect(
-		() => dragger.setSession(props.sessionId, props.inputActions),
+		() => dragger.registerSession(props.sessionId, props.inputActions),
 		[props.sessionId, props.inputActions]
 	);
 	const enabled = dragger.isEnabled();
