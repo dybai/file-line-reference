@@ -1,8 +1,8 @@
 {
   "name": "@dybai/file-line-reference",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
-  "description": "Select file lines and add @path:start-end line-range references to the chat composer; click a reference chip to reopen the file at its start line",
+  "description": "Select file lines and add @path:start-end line-range references to the chat composer; drag files or folders from the Files panel into the composer as @path mentions; click a reference chip to reopen the file at its start line",
   "scripts": {
     "test": "node --test",
     "build": "node scripts/build.mjs"
@@ -21,7 +21,7 @@
     "type": "git",
     "url": "git+https://github.com/dybai/file-line-reference.git"
   },
-  "keywords": ["dsh", "deepseek-harness", "line-reference", "file-preview"],
+  "keywords": ["dsh", "deepseek-harness", "line-reference", "file-preview", "drag-and-drop", "file-mention"],
   "license": "MIT",
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },

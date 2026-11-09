@@ -8,25 +8,29 @@ const NUMBERS_CLASS = 'flr-numbers';
 
 const zh = {
 	'meta.title': '文件行引用',
-	'meta.description': '选中文件的若干行，把 @路径:起-止 行范围引用插入对话输入框（Ctrl+Shift+L）；点击消息中的引用 chip 回到起始行。当前支持侧栏文件预览。',
+	'meta.description': '选中文件的若干行，把 @路径:起-止 行范围引用插入对话输入框（Ctrl+Shift+L）；点击消息中的引用 chip 回到起始行；也能把文件面板中的文件或目录拖到输入框，插入 @路径 引用。',
 	'action.addLines': '添加选中行到对话',
 	'action.addLinesTitle': '把选中的行以 @路径:起-止 引用插入输入框（Ctrl+Shift+L）',
 	'action.lineMode': '行选择模式',
 	'action.lineModeHint': '行选择模式：点击行选中整行，Shift+点击连选，Ctrl/Cmd+点击增减；再次点击关闭',
 	'action.numbers': '行号',
 	'action.numbersHint': '在纯文本预览中显示行号（代码预览自带行号）',
+	'action.drag': '拖拽文件到对话',
+	'action.dragHint': '启用后，可把文件或目录从文件面板拖到输入框，插入 @路径 引用；关闭后不再响应拖拽',
 	'shortcut.label': '添加选中行到对话'
 };
 
 const en = {
 	'meta.title': 'File Line Reference',
-	'meta.description': 'Select file lines and insert @path:start-end references into the chat composer (Ctrl+Shift+L); click a reference chip in a message to reopen the file at its start line. Currently supports the sidebar file preview.',
+	'meta.description': 'Select file lines and insert @path:start-end references into the chat composer (Ctrl+Shift+L); click a reference chip in a message to reopen the file at its start line; drag a file or folder from the Files panel into the composer to insert an @path reference.',
 	'action.addLines': 'Add selected lines to chat',
 	'action.addLinesTitle': 'Insert the selected lines as @path:start-end into the composer (Ctrl+Shift+L)',
 	'action.lineMode': 'Line select mode',
 	'action.lineModeHint': 'Line select mode: click selects a line, Shift+click extends, Ctrl/Cmd+click toggles; click again to turn off',
 	'action.numbers': 'Line numbers',
 	'action.numbersHint': 'Show line numbers in the plain-text preview (the code preview has its own)',
+	'action.drag': 'Drag files to chat',
+	'action.dragHint': 'When on, drag a file or folder from the Files panel into the composer to insert an @path reference; when off, drags are ignored',
 	'shortcut.label': 'Add selected lines to chat'
 };
 
@@ -50,6 +54,7 @@ const STYLE_TEXT = [
 	'.flr-tool-btn:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }',
 	'.flr-tool-btn:disabled { opacity: .4; cursor: default; background: transparent; color: var(--dsw-alias-label-secondary); }',
 	'.flr-tool-btn[aria-pressed="true"] { color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); }',
+	'.flr-drop-target { outline: 2px dashed var(--dsw-alias-brand-primary); outline-offset: 3px; border-radius: 8px; }',
 	`.${NUMBERS_CLASS} [data-textpreview-line]::before { content: attr(data-textpreview-line); display: inline-block; min-width: 3ch; margin-right: 10px; color: var(--dsw-alias-label-secondary); opacity: .75; text-align: right; user-select: none; }`
 ].join('\n');
 
@@ -83,6 +88,11 @@ const ICON_FILE = h('svg', { className: 'flr-chip-icon', width: 12, height: 12, 
 
 const ICON_NUMBERS = h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
 	h('path', { d: 'M5.6 2 4.4 14M11.6 2 10.4 14M2.4 5.6h11.2M2 10.4h11.2', stroke: 'currentColor', strokeWidth: 1.2, strokeLinecap: 'round' })
+);
+
+const ICON_DRAG = h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
+	h('path', { d: 'M8 2.2v11.6M2.2 8h11.6', stroke: 'currentColor', strokeWidth: 1.2, strokeLinecap: 'round' }),
+	h('path', { d: 'M8 2.2 6.2 4M8 2.2 9.8 4M8 13.8 6.2 12M8 13.8l1.8-1.8M2.2 8 4 6.2M2.2 8 4 9.8M13.8 8 12 6.2M13.8 8l-1.8 1.8', stroke: 'currentColor', strokeWidth: 1.2, strokeLinecap: 'round', strokeLinejoin: 'round' })
 );
 
 /* ----------------------------------------------------- selection controller -- */
@@ -351,6 +361,237 @@ const controller = (() => {
 	};
 })();
 
+/* --------------------------------------------------------------- dragging -- */
+
+const DRAG_STORAGE_KEY = 'flr.drag';
+/** Private payload written on `dragstart`; never `Files`, so native drops stay untouched. */
+const DRAG_MIME = 'application/x-dsh-flr-path';
+/** dsh-file-drag's payload for the same rows; when present we yield so a drop never inserts twice. */
+const FOREIGN_DRAG_MIME = 'application/x-dsh-file-path';
+const DROP_TARGET_CLASS = 'flr-drop-target';
+
+/**
+ * Drags one Files-panel row into the composer as a plain `@path` mention.
+ *
+ * The Files tree exposes no drag source, so this reads its stable DOM contract
+ * (`[data-files-entry]` + `[data-files-path]`): a delegated `pointerdown` sets
+ * `draggable` on the row just before the gesture can start, `dragstart` carries
+ * the path over a private MIME type, and `drop` only acts inside the composer.
+ * The feature is off when the persisted toggle says so — then no row is armed
+ * and no drop is claimed.
+ */
+const dragger = (() => {
+	const state = { enabled: true, session: null };
+	const listeners = new Set();
+	let attached = 0;
+	let armed = null;
+	let dropTarget = null;
+	let dragging = false;
+
+	try {
+		state.enabled = FlrCore.readToggleState(window.localStorage.getItem(DRAG_STORAGE_KEY));
+	} catch {
+		state.enabled = true;
+	}
+
+	function subscribe(listener) {
+		listeners.add(listener);
+		return () => listeners.delete(listener);
+	}
+
+	function notify() {
+		for (const listener of listeners) listener();
+	}
+
+	/** The Files row an event started on, or null outside the tree. */
+	function rowOf(node) {
+		const element = node instanceof Element ? node : node?.parentElement;
+		if (!element) return null;
+		const row = element.closest('[data-files-path]');
+		return row instanceof Element && row.hasAttribute('data-files-entry') ? row : null;
+	}
+
+	/** The composer that would receive the drop, or null elsewhere. */
+	function composerOf(node) {
+		const element = node instanceof Element ? node : node?.parentElement;
+		return element ? element.closest('[contenteditable="true"]') : null;
+	}
+
+	function disarm() {
+		if (armed === null) return;
+		if (armed.wasDraggable === null) armed.element.removeAttribute('draggable');
+		else armed.element.setAttribute('draggable', armed.wasDraggable);
+		armed = null;
+	}
+
+	function arm(row) {
+		if (armed !== null && armed.element === row) return;
+		disarm();
+		armed = { element: row, wasDraggable: row.getAttribute('draggable') };
+		row.setAttribute('draggable', 'true');
+	}
+
+	function clearDropTarget() {
+		if (dropTarget === null) return;
+		dropTarget.classList.remove(DROP_TARGET_CLASS);
+		dropTarget = null;
+	}
+
+	function onPointerDown(event) {
+		if (!state.enabled || event.button !== 0) return;
+		const row = rowOf(event.target);
+		if (row !== null) arm(row);
+	}
+
+	function onPointerUp() {
+		if (!dragging) disarm();
+	}
+
+	function onDragStart(event) {
+		if (!state.enabled || armed === null) return;
+		const path = armed.element.getAttribute('data-files-path');
+		const kind = armed.element.getAttribute('data-files-entry') ?? 'file';
+		if (path === null || path === '') return;
+		dragging = true;
+		try {
+			event.dataTransfer?.setData(DRAG_MIME, JSON.stringify({ path, kind }));
+			if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copy';
+		} catch (error) {
+			// No writable DataTransfer: leave `dragging` false so no drop is claimed.
+			dragging = false;
+			console.warn('[file-line-reference] drag payload rejected:', error);
+		}
+	}
+
+	function onDragOver(event) {
+		if (!state.enabled || !dragging) return;
+		const composer = composerOf(event.target);
+		if (composer === null) {
+			clearDropTarget();
+			return;
+		}
+		event.preventDefault();
+		if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+		if (dropTarget !== composer) {
+			clearDropTarget();
+			dropTarget = composer;
+			composer.classList.add(DROP_TARGET_CLASS);
+		}
+	}
+
+	function onDragLeave(event) {
+		if (dropTarget === null) return;
+		// Only a leave that lands outside the composer clears the highlight.
+		const next = event.relatedTarget;
+		if (next instanceof Node && dropTarget.contains(next)) return;
+		clearDropTarget();
+	}
+
+	function onDragEnd() {
+		dragging = false;
+		clearDropTarget();
+		disarm();
+	}
+
+	/** Insert one dragged path at the caret; false when the composer refused it. */
+	function insert(payload) {
+		const session = state.session;
+		if (session === null || !session.inputActions) return false;
+		const mention = FlrCore.mentionForPath(payload.path, payload.kind, sessionCwd(session.sessionId));
+		if (mention === '') return false;
+		const actions = session.inputActions;
+		const span = actions.captureInsertion();
+		if (!actions.insertText(FlrCore.padInsertion('', span.start, mention), span)) {
+			const retry = actions.captureInsertion();
+			if (!actions.insertText(FlrCore.padInsertion('', retry.start, mention), retry)) {
+				console.warn('[file-line-reference] composer rejected the dragged reference');
+				return false;
+			}
+		}
+		return true;
+	}
+
+	function onDrop(event) {
+		if (!state.enabled || !dragging) return;
+		const transfer = event.dataTransfer;
+		if (transfer === null) return;
+		// dsh-file-drag claims the same rows; yielding keeps one drop to one insert.
+		if (Array.prototype.includes.call(transfer.types, FOREIGN_DRAG_MIME)) {
+			clearDropTarget();
+			return;
+		}
+		const payload = FlrCore.parseDraggedPath(transfer.getData(DRAG_MIME));
+		const composer = composerOf(event.target);
+		if (payload === null || composer === null) {
+			clearDropTarget();
+			return;
+		}
+		event.preventDefault();
+		event.stopPropagation();
+		clearDropTarget();
+		insert(payload);
+	}
+
+	return {
+		subscribe,
+		isEnabled() {
+			return state.enabled;
+		},
+		setEnabled(on) {
+			state.enabled = on;
+			try {
+				window.localStorage.setItem(DRAG_STORAGE_KEY, on ? '1' : '0');
+			} catch {
+				// Storage unavailable: the toggle stays session-local.
+			}
+			dragging = false;
+			clearDropTarget();
+			disarm();
+			notify();
+		},
+		/** Register the mounted Files page's session so a drop can reach its composer. */
+		setSession(sessionId, inputActions) {
+			const session = { sessionId, inputActions };
+			state.session = session;
+			return () => {
+				if (state.session === session) state.session = null;
+			};
+		},
+		/** Refcounted document listeners, alive while a Files page is mounted. */
+		retain() {
+			attached += 1;
+			if (attached === 1) {
+				document.addEventListener('pointerdown', onPointerDown, true);
+				document.addEventListener('pointerup', onPointerUp, true);
+				document.addEventListener('pointercancel', onPointerUp, true);
+				document.addEventListener('dragstart', onDragStart, true);
+				document.addEventListener('dragover', onDragOver, true);
+				document.addEventListener('dragleave', onDragLeave, true);
+				document.addEventListener('drop', onDrop, true);
+				document.addEventListener('dragend', onDragEnd, true);
+				window.addEventListener('blur', onDragEnd);
+			}
+			return () => {
+				attached -= 1;
+				if (attached === 0) {
+					document.removeEventListener('pointerdown', onPointerDown, true);
+					document.removeEventListener('pointerup', onPointerUp, true);
+					document.removeEventListener('pointercancel', onPointerUp, true);
+					document.removeEventListener('dragstart', onDragStart, true);
+					document.removeEventListener('dragover', onDragOver, true);
+					document.removeEventListener('dragleave', onDragLeave, true);
+					document.removeEventListener('drop', onDrop, true);
+					document.removeEventListener('dragend', onDragEnd, true);
+					window.removeEventListener('blur', onDragEnd);
+					dragging = false;
+					clearDropTarget();
+					disarm();
+				}
+			};
+		}
+	};
+})();
+
 /* ------------------------------------------------------------ components -- */
 
 /** Session facade captured by apply(); lets action handlers resolve cwd without hooks. */
@@ -542,8 +783,36 @@ function FileLinesChip(props) {
 	}, content);
 }
 
-/* ------------------------------------------------------------------ apply -- */
+/**
+ * Files-page toolbar occupant for `sidebar.right.tab.files.actions`.
+ * Owner props: `{ absolutePath }`; session standard props supply `sessionId`,
+ * `inputActions` and `t`.
+ */
+function DragToggle(props) {
+	const [, force] = React.useReducer((n) => n + 1, 0);
+	React.useEffect(dragger.retain, []);
+	React.useEffect(() => dragger.subscribe(force), [force]);
+	React.useEffect(
+		() => dragger.setSession(props.sessionId, props.inputActions),
+		[props.sessionId, props.inputActions]
+	);
+	const enabled = dragger.isEnabled();
+	const t = props.t;
+	return h('button', {
+		className: 'flr-tool-btn',
+		type: 'button',
+		title: t('action.dragHint'),
+		'aria-label': t('action.drag'),
+		'aria-pressed': enabled,
+		onClick: () => dragger.setEnabled(!enabled)
+	}, ICON_DRAG);
+}
 
+function DragToggleGuarded(props) {
+	return h(ToolbarBoundary, null, h(DragToggle, props));
+}
+
+/* ------------------------------------------------------------------ apply -- */
 function apply(ctx) {
 	console.info('[file-line-reference] apply started');
 	ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'flr: dictionaries');
@@ -583,6 +852,13 @@ function apply(ctx) {
 		yield ctx.slots.register(
 			{ name: 'sidebar.right.tab.document.actions', id: 'flr-add-lines', order: 10, locale: NS },
 			ToolbarActionsGuarded
+		);
+	});
+
+	ctx.slots.inject('sidebar.right.tab.files.actions', function* () {
+		yield ctx.slots.register(
+			{ name: 'sidebar.right.tab.files.actions', id: 'flr-drag-toggle', order: 10, locale: NS },
+			DragToggleGuarded
 		);
 	});
 

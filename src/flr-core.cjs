@@ -129,6 +129,22 @@
 	}
 
 	/**
+	 * Build a plain `@path` mention for one file or directory, matching the
+	 * built-in reference grammar: a directory carries a trailing slash, and a
+	 * path with whitespace is quoted.
+	 * @param path - workspace-relative path in either separator spelling.
+	 * @param kind - the tree row's kind; only `'directory'` changes the shape.
+	 * @returns the mention text, or '' for an unrepresentable path.
+	 */
+	function formatPlainMention(path, kind) {
+		if (typeof path !== 'string' || path.length === 0) return '';
+		if (/["\u0000-\u001f\u007f-\u009f]/u.test(path)) return '';
+		const trailing = kind === 'directory' && !path.endsWith('/') ? '/' : '';
+		const body = `${path}${trailing}`;
+		return /\s/u.test(body) ? `@"${body}"` : `@${body}`;
+	}
+
+	/**
 	 * Normalize a path for a mention: forward slashes, and the session cwd
 	 * stripped when the path lives inside it (comparison is case-insensitive for
 	 * Windows spellings); anything else stays absolute.
@@ -141,6 +157,49 @@
 		if (normalized.toLowerCase() === root.toLowerCase()) return '';
 		if (normalized.toLowerCase().startsWith(`${root.toLowerCase()}/`)) return normalized.slice(root.length + 1);
 		return normalized;
+	}
+
+	/**
+	 * Build the insertion text for one dragged tree row: the workspace-relative
+	 * path and the plain-mention shape, or '' for a row that cannot be named.
+	 * @param path - the row's path, absolute or relative.
+	 * @param kind - the row's kind; `'directory'` adds the trailing slash.
+	 * @param cwd - the session workspace root, when known.
+	 * @returns the mention text, or '' when nothing is representable.
+	 */
+	function mentionForPath(path, kind, cwd) {
+		const relative = relativeMentionPath(path, cwd);
+		if (relative === '') return '';
+		return formatPlainMention(relative, kind);
+	}
+
+	/**
+	 * Parse the private drag payload written by `dragstart`.
+	 * @param raw - the `DataTransfer` value for the private MIME type.
+	 * @returns `{ path, kind }` for a complete payload, else null.
+	 */
+	function parseDraggedPath(raw) {
+		if (typeof raw !== 'string' || raw.length === 0) return null;
+		let value;
+		try {
+			value = JSON.parse(raw);
+		} catch {
+			return null;
+		}
+		if (value === null || typeof value !== 'object') return null;
+		const { path, kind } = value;
+		if (typeof path !== 'string' || path.length === 0) return null;
+		if (typeof kind !== 'string' || kind.length === 0) return null;
+		return { path, kind };
+	}
+
+	/**
+	 * Read the persisted drag-toggle value.
+	 * @param stored - the raw `localStorage` string, or null when unset.
+	 * @returns enabled unless the user explicitly stored the disabled value.
+	 */
+	function readToggleState(stored) {
+		return stored !== '0';
 	}
 
 	/** Component-encode one address segment, keeping `:` literal for drive letters. */
@@ -208,7 +267,11 @@
 		matchFileLinesNode,
 		mergeLines,
 		formatMention,
+		formatPlainMention,
 		relativeMentionPath,
+		mentionForPath,
+		parseDraggedPath,
+		readToggleState,
 		fileAddress,
 		padInsertion
 	};

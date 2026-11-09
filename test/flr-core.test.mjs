@@ -125,3 +125,54 @@ test('padInsertion pads both sides when the span start sits past the draft end',
   assert.equal(core.padInsertion('', 2, '@a.ts:1-2'), ' @a.ts:1-2 ');
   assert.equal(core.padInsertion('a\nb', 1, '@a.ts:1-2'), ' @a.ts:1-2');
 });
+
+test('formatPlainMention writes a bare file path as an unquoted @ mention', () => {
+  assert.equal(core.formatPlainMention('src/app.ts', 'file'), '@src/app.ts');
+});
+
+test('formatPlainMention marks a directory with one trailing slash', () => {
+  assert.equal(core.formatPlainMention('packages', 'directory'), '@packages/');
+  assert.equal(core.formatPlainMention('src/widgets', 'directory'), '@src/widgets/');
+  assert.equal(core.formatPlainMention('packages/', 'directory'), '@packages/');
+});
+
+test('formatPlainMention quotes whitespace paths and rejects unrepresentable ones', () => {
+  assert.equal(core.formatPlainMention('my notes.md', 'file'), '@"my notes.md"');
+  assert.equal(core.formatPlainMention('my notes', 'directory'), '@"my notes/"');
+  assert.equal(core.formatPlainMention('a"b.ts', 'file'), '');
+  assert.equal(core.formatPlainMention('a\u0001b.ts', 'file'), '');
+  assert.equal(core.formatPlainMention('', 'file'), '');
+  assert.equal(core.formatPlainMention(undefined, 'file'), '');
+  assert.equal(core.formatPlainMention('a.ts', undefined), '@a.ts');
+});
+
+test('parseDraggedPath accepts only a complete private drag payload', () => {
+  assert.deepEqual(core.parseDraggedPath('{"path":"src/app.ts","kind":"file"}'), {
+    path: 'src/app.ts',
+    kind: 'file'
+  });
+  assert.deepEqual(core.parseDraggedPath('{"path":"packages","kind":"directory"}'), {
+    path: 'packages',
+    kind: 'directory'
+  });
+  assert.equal(core.parseDraggedPath(''), null);
+  assert.equal(core.parseDraggedPath('not json'), null);
+  assert.equal(core.parseDraggedPath('null'), null);
+  assert.equal(core.parseDraggedPath('{"kind":"file"}'), null);
+  assert.equal(core.parseDraggedPath('{"path":""}'), null);
+  assert.equal(core.parseDraggedPath('{"path":7,"kind":"file"}'), null);
+});
+
+test('mentionForPath relativizes the cwd and keeps directory and quoting rules', () => {
+  assert.equal(core.mentionForPath('E:\\t\\src\\a.ts', 'file', 'E:\\t'), '@src/a.ts');
+  assert.equal(core.mentionForPath('src/widgets', 'directory', 'E:\\t'), '@src/widgets/');
+  assert.equal(core.mentionForPath('my notes.md', 'file', undefined), '@"my notes.md"');
+  assert.equal(core.mentionForPath('E:\\t', 'directory', 'E:\\t'), '');
+});
+
+test('readToggleState defaults to enabled and only the stored zero disables', () => {
+  assert.equal(core.readToggleState(null), true);
+  assert.equal(core.readToggleState('1'), true);
+  assert.equal(core.readToggleState('0'), false);
+  assert.equal(core.readToggleState('yes'), true);
+});
