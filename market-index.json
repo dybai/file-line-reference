@@ -47,9 +47,7 @@
           "version": "1.1.0",
           "publishTimestamp": 1794203595,
           "source": {
-            "type": "git",
-            "url": "https://github.com/dybai/file-line-reference",
-            "commit": "46326f9fa70815f1a761aff397c7097a10006915"
+            "type": "npm"
           },
           "engines": {
             "dsh": ">=0.2.1-rc.5"
