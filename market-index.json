@@ -28,8 +28,8 @@
         "zh-cn": "文件行引用"
       },
       "description": {
-        "en": "Select file lines and insert @path:start-end references into the chat composer; click a reference chip to reopen the file at its start line. Currently supports the sidebar file preview.",
-        "zh-cn": "选中文件的若干行，把 @路径:起-止 行范围引用插入对话输入框；点击消息中的引用 chip 回到起始行。当前支持侧栏文件预览。"
+        "en": "Select file lines and insert @path:start-end references into the chat composer; drag files or folders from the Files panel into the composer as @path mentions; click a reference chip to reopen the file at its start line.",
+        "zh-cn": "选中文件的若干行，把 @路径:起-止 行范围引用插入对话输入框；也能把 Files 面板中的文件或目录拖到输入框，插入 @路径 引用；点击消息中的引用 chip 回到起始行。"
       },
       "author": "dybai",
       "homepage": "https://github.com/dybai/file-line-reference",
@@ -38,11 +38,23 @@
       },
       "metadata": {
         "category": "productivity",
-        "keywords": ["dsh", "line-reference", "file-preview"],
+        "keywords": ["dsh", "line-reference", "file-preview", "drag-and-drop", "file-mention"],
         "labels": [],
         "sortKeys": {}
       },
       "versions": [
+        {
+          "version": "1.1.0",
+          "publishTimestamp": 1794203595,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/dybai/file-line-reference",
+            "commit": "46326f9fa70815f1a761aff397c7097a10006915"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.5"
+          }
+        },
         {
           "version": "1.0.0",
           "publishTimestamp": 1794044678,
