@@ -477,7 +477,11 @@ const dragger = (() => {
 	}
 
 	function onPointerCancel() {
-		finishDrag();
+		// Native drag-and-drop cancels the pointer when the user starts dragging
+		// (Pointer Events spec), so a cancel while `dragging` is the drag's normal
+		// beginning, not its end: the gesture finishes through dragend/drop. Only
+		// an idle cancel retires a stale armed row.
+		if (!dragging) finishDrag();
 	}
 
 	function onDragStart(event) {
