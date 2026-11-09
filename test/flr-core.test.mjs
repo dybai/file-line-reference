@@ -183,13 +183,18 @@ test('mentionForPath refuses a missing path instead of naming "undefined"', () =
   assert.equal(core.mentionForPath('', 'directory', undefined), '');
 });
 
-test('dragVerdict yields first, then requires one ready and matching Session', () => {
-  const ok = { sourceSession: 's-1', targetSession: 's-1', foreign: false, ready: true };
+test('dragVerdict yields first, then requires one ready registered matching Session', () => {
+  const ok = { sourceSession: 's-1', targetSession: 's-1', foreign: false, ready: true, registered: true };
   assert.equal(core.dragVerdict(ok), 'insert');
   assert.equal(core.dragVerdict({ ...ok, foreign: true }), 'yield');
+  assert.equal(core.dragVerdict({ ...ok, foreign: true, targetSession: 's-2' }), 'yield');
   assert.equal(core.dragVerdict({ ...ok, sourceSession: null }), 'ignore');
+  assert.equal(core.dragVerdict({ ...ok, sourceSession: '' }), 'ignore');
   assert.equal(core.dragVerdict({ ...ok, targetSession: null }), 'ignore');
   assert.equal(core.dragVerdict({ ...ok, targetSession: 's-2' }), 'ignore');
   assert.equal(core.dragVerdict({ ...ok, targetSession: 'S-1' }), 'ignore');
   assert.equal(core.dragVerdict({ ...ok, ready: false }), 'ignore');
+  assert.equal(core.dragVerdict({ ...ok, registered: false }), 'ignore');
+  assert.equal(core.dragVerdict(null), 'ignore');
+  assert.equal(core.dragVerdict(undefined), 'ignore');
 });

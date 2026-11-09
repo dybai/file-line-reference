@@ -511,7 +511,8 @@ const dragger = (() => {
 			sourceSession: draggedSession,
 			targetSession: composer === null ? null : sessionOfComposer(composer),
 			foreign: transfer !== null && Array.prototype.includes.call(transfer.types, FOREIGN_DRAG_MIME),
-			ready: true
+			ready: true,
+			registered: draggedSession !== null && state.sessions.has(draggedSession)
 		});
 		// A foreign payload or a composer of another Session stays inert: no
 		// preventDefault, no copy cursor, no highlight.
@@ -564,20 +565,29 @@ const dragger = (() => {
 	function onDrop(event) {
 		if (!state.enabled || !dragging) return;
 		const transfer = event.dataTransfer;
-		if (!transfer) {
-			finishDrag();
-			return;
-		}
-		const payload = FlrCore.parseDraggedPath(transfer.getData(DRAG_MIME));
-		const composer = composerOf(event.target);
 		const sourceSession = draggedSession;
+		let payload = null;
+		let composer = null;
+		let foreign = false;
+		// A throw here must not strand `dragging`/`armed`; the drag ends either way.
+		try {
+			if (transfer !== null) {
+				payload = FlrCore.parseDraggedPath(transfer.getData(DRAG_MIME));
+				composer = composerOf(event.target);
+				foreign = Array.prototype.includes.call(transfer.types, FOREIGN_DRAG_MIME);
+			}
+		} catch (error) {
+			console.warn('[file-line-reference] drag payload unreadable:', error);
+		} finally {
+			finishDrag();
+		}
 		const verdict = FlrCore.dragVerdict({
 			sourceSession,
 			targetSession: composer === null ? null : sessionOfComposer(composer),
-			foreign: Array.prototype.includes.call(transfer.types, FOREIGN_DRAG_MIME),
-			ready: payload !== null
+			foreign,
+			ready: payload !== null,
+			registered: sourceSession !== null && state.sessions.has(sourceSession)
 		});
-		finishDrag();
 		if (verdict !== 'insert' || payload === null || sourceSession === null) return;
 		event.preventDefault();
 		event.stopPropagation();

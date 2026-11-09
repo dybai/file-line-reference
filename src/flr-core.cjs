@@ -207,14 +207,17 @@
 	 * Decide what one drag event may do.
 	 *
 	 * `yield` wins over every other answer so an installed dsh-file-drag keeps
-	 * its own drop; otherwise the drop is ours only when the payload is ready
-	 * and the target composer belongs to the Session the row came from.
-	 * @param input - foreign payload flag, payload readiness, and both Sessions.
+	 * its own drop; otherwise the drop is ours only when the payload is ready,
+	 * the source Session still has a mounted Files page, and the target
+	 * composer belongs to that same Session.
+	 * @param input - foreign payload flag, payload readiness, registration, and
+	 * both Sessions.
 	 * @returns `'yield'`, `'insert'`, or `'ignore'`.
 	 */
 	function dragVerdict(input) {
-		if (input === null || typeof input !== 'object' || input.foreign === true) return 'yield';
-		if (input.ready !== true) return 'ignore';
+		if (input === null || typeof input !== 'object') return 'ignore';
+		if (input.foreign === true) return 'yield';
+		if (input.ready !== true || input.registered !== true) return 'ignore';
 		if (typeof input.sourceSession !== 'string' || input.sourceSession === '') return 'ignore';
 		if (input.targetSession !== input.sourceSession) return 'ignore';
 		return 'insert';
