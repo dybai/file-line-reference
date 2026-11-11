@@ -563,6 +563,7 @@ const dragger = (() => {
 			console.warn('[file-line-reference] dragged reference insertion failed:', error);
 			return false;
 		}
+		focusComposer(sessionId);
 		return true;
 	}
 
@@ -693,6 +694,24 @@ function sessionCwd(sessionId) {
 }
 
 /**
+ * Return the keyboard to one Session's composer with the caret it last held —
+ * after an insertion, Lexical's stored selection sits just past the inserted
+ * text, so the caret lands right after the mention. Reaches the session-scoped
+ * `SessionInput` face through the session binding's own context (a root-level
+ * plugin cannot inject session services); every hop is optional, so a missing
+ * face silently skips the focus instead of breaking the insertion.
+ */
+function focusComposer(sessionId) {
+	try {
+		if (sessionId === undefined || sessionId === null || !sessionsFacade) return;
+		const controller = sessionsFacade.binding(sessionId)?.ctx?.get('conversation');
+		controller?.input?.shell?.(sessionId)?.focus?.();
+	} catch {
+		// Focus restoration is best-effort; the insertion already succeeded.
+	}
+}
+
+/**
  * Keep one broken render from silently deleting the toolbar: the boundary
  * logs the failure to the console and drops only the buttons. Falls back to a
  * pass-through when this React build exposes no Component class, so the
@@ -779,13 +798,16 @@ function ToolbarActions(props) {
 		// Always pad: a leading space unless the mention opens the draft, and
 		// always a trailing space so text typed next cannot glue to the path.
 		const text = FlrCore.padInsertion('', span.start, mention);
-		if (!actions.insertText(text, span)) {
+		let inserted = actions.insertText(text, span);
+		if (!inserted) {
 			const retry = actions.captureInsertion();
-			if (!actions.insertText(FlrCore.padInsertion('', retry.start, mention), retry)) {
+			inserted = actions.insertText(FlrCore.padInsertion('', retry.start, mention), retry);
+			if (!inserted) {
 				console.warn('[file-line-reference] composer rejected the line reference insertion');
 				return false;
 			}
 		}
+		focusComposer(sessionId);
 		return true;
 	}
 
