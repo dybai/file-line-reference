@@ -1,6 +1,6 @@
 {
   "name": "@dybai/file-line-reference",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
   "description": "Select file lines and add @path:start-end line-range references to the chat composer; drag files or folders from the Files panel into the composer as @path mentions; click a reference chip to reopen the file at its start line",
   "scripts": {
