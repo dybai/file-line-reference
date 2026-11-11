@@ -698,13 +698,18 @@ function sessionCwd(sessionId) {
  * after an insertion, Lexical's stored selection sits just past the inserted
  * text, so the caret lands right after the mention. Reaches the session-scoped
  * `SessionInput` face through the session binding's own context (a root-level
- * plugin cannot inject session services); every hop is optional, so a missing
- * face silently skips the focus instead of breaking the insertion.
+ * plugin cannot inject session services).
+ *
+ * Call this only right after a successful insertion through that session's
+ * `inputActions`: a resident shell is then guaranteed to exist. `shell(id)`
+ * itself throws when the session has no retained binding, so the try/catch is
+ * load-bearing — it turns that miss into a silent skip instead of breaking the
+ * finished insertion.
  */
 function focusComposer(sessionId) {
 	try {
 		if (sessionId === undefined || sessionId === null || !sessionsFacade) return;
-		const controller = sessionsFacade.binding(sessionId)?.ctx?.get('conversation');
+		const controller = sessionsFacade.binding(sessionId)?.ctx.get('conversation');
 		controller?.input?.shell?.(sessionId)?.focus?.();
 	} catch {
 		// Focus restoration is best-effort; the insertion already succeeded.
@@ -834,7 +839,16 @@ function ToolbarActions(props) {
 			// Keyboard activation (Enter/Space) never fires pointerdown, so the
 			// keydown path below is the keyboard's way in.
 			onPointerDown: (event) => {
-				if (event.button === 0) performInsert();
+				if (event.button !== 0) return;
+				// Insert+focus runs before mousedown; without preventDefault the
+				// compatibility mousedown's default action moves focus to this
+				// button (Windows/Linux Chromium and Firefox) and blurs the
+				// composer we just restored. Click still dispatches; this
+				// button has no onClick. Keyboard activation (Enter/Space)
+				// never fires pointerdown, so the keydown path below is the
+				// keyboard's way in.
+				event.preventDefault();
+				performInsert();
 			},
 			onKeyDown: (event) => {
 				if (event.key === 'Enter' || event.key === ' ') performInsert();
