@@ -551,6 +551,12 @@ const dragger = (() => {
 		}
 		const actions = entry.inputActions;
 		try {
+			// Focus BEFORE capturing: a composer that never held focus has no
+			// live selection, and inserting into that synthetic-span state
+			// leaves the stored caret behind the mention. Focusing first gives
+			// the editor a real selection, so insertion behaves exactly like
+			// the @ picker's and the caret lands after the text.
+			focusComposer(sessionId);
 			const span = actions.captureInsertion();
 			if (!actions.insertText(FlrCore.padInsertion('', span.start, mention), span)) {
 				const retry = actions.captureInsertion();
@@ -803,6 +809,10 @@ function ToolbarActions(props) {
 		// Always pad: a leading space unless the mention opens the draft, and
 		// always a trailing space so text typed next cannot glue to the path.
 		const text = FlrCore.padInsertion('', span.start, mention);
+		// Focus first for the same reason the drag path does: an unfocused
+		// composer carries no live selection, and only a real selection
+		// guarantees the caret advances past the inserted reference.
+		focusComposer(sessionId);
 		let inserted = actions.insertText(text, span);
 		if (!inserted) {
 			const retry = actions.captureInsertion();
