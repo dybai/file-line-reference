@@ -281,6 +281,26 @@
 		return `${before ? ' ' : ''}${insertion}${after ? ' ' : ''}`;
 	}
 
+	/**
+	 * Validate an editor selection snapshot as a referenceable line range.
+	 *
+	 * The dsh-editor contract (§4.2/§5.5) publishes the frontmost handle's
+	 * `selection` slice as `{ start, end, lineStart, lineEnd, text } | null`,
+	 * where a collapsed caret reports `text: null`. Only a non-collapsed
+	 * selection with well-formed 1-based inclusive lines can become an
+	 * `@path:S-E` mention.
+	 * @param selection - the handle's selection snapshot, or null.
+	 * @returns `{ lineStart, lineEnd }` for a usable selection, else null.
+	 */
+	function usableEditorSelection(selection) {
+		if (selection === null || typeof selection !== 'object') return null;
+		const { lineStart, lineEnd, text } = selection;
+		if (typeof text !== 'string' || text === '') return null;
+		if (!Number.isSafeInteger(lineStart) || lineStart < 1) return null;
+		if (!Number.isSafeInteger(lineEnd) || lineEnd < lineStart) return null;
+		return { lineStart, lineEnd };
+	}
+
 	return {
 		stripTrailingPunctuation,
 		parseLineSuffix,
@@ -294,6 +314,7 @@
 		parseDraggedPath,
 		readToggleState,
 		dragVerdict,
+		usableEditorSelection,
 		fileAddress,
 		padInsertion
 	};

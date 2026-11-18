@@ -8,7 +8,7 @@ const NUMBERS_CLASS = 'flr-numbers';
 
 const zh = {
 	'meta.title': '文件行引用',
-	'meta.description': '选中文件的若干行，把 @路径:起-止 行范围引用插入对话输入框（Ctrl+Shift+L）；点击消息中的引用 chip 回到起始行；也能把文件面板中的文件或目录拖到输入框，插入 @路径 引用。',
+	'meta.description': '选中文件的若干行，把 @路径:起-止 行范围引用插入对话输入框（Ctrl+Shift+L）；点击消息中的引用 chip 回到起始行；也能把文件面板中的文件或目录拖到输入框插入 @路径 引用，或在 dsh-editor 编辑区选中若干行后同样插入行引用。',
 	'action.addLines': '添加选中行到对话',
 	'action.addLinesTitle': '把选中的行以 @路径:起-止 引用插入输入框（Ctrl+Shift+L）',
 	'action.lineMode': '行选择模式',
@@ -22,7 +22,7 @@ const zh = {
 
 const en = {
 	'meta.title': 'File Line Reference',
-	'meta.description': 'Select file lines and insert @path:start-end references into the chat composer (Ctrl+Shift+L); click a reference chip in a message to reopen the file at its start line; drag a file or folder from the Files panel into the composer to insert an @path reference.',
+	'meta.description': 'Select file lines and insert @path:start-end references into the chat composer (Ctrl+Shift+L); click a reference chip in a message to reopen the file at its start line; drag a file or folder from the Files panel into the composer to insert an @path reference, or select lines in the dsh-editor editing area and reference them the same way.',
 	'action.addLines': 'Add selected lines to chat',
 	'action.addLinesTitle': 'Insert the selected lines as @path:start-end into the composer (Ctrl+Shift+L)',
 	'action.lineMode': 'Line select mode',
@@ -349,6 +349,141 @@ const controller = (() => {
 			notify();
 		},
 		/** Register the mounted toolbar's insert action for the global hotkey. */
+		setInserter(fn) {
+			inserter = fn;
+			return () => {
+				if (inserter === fn) inserter = null;
+			};
+		},
+		currentInserter() {
+			return inserter;
+		}
+	};
+})();
+
+/* --------------------------------------------------------- editor bridge -- */
+
+/**
+ * Tracks the frontmost dsh-editor tab's selection through the editor's public
+ * integration contract (its docs/contracts.md §4): `ctx.get('dshEditor')` →
+ * `active` frontmost handle → `selection` slice. Every access feature-detects,
+ * so an uninstalled editor, a background tab, or a future contract change
+ * degrades to "no editor selection" — the preview features keep working
+ * untouched, and nothing here ever throws past a toolbar render.
+ */
+const editorBridge = (() => {
+	const listeners = new Set();
+	let resolver = null;
+	let attached = 0;
+	let unsubActive = null;
+	let unsubSelection = null;
+	let currentHandle;
+	let inserter = null;
+
+	function subscribe(listener) {
+		listeners.add(listener);
+		return () => listeners.delete(listener);
+	}
+
+	function notify() {
+		for (const listener of listeners) listener();
+	}
+
+	/** Feature-detect the editor service; undefined until dsh-editor applies. */
+	function service() {
+		if (resolver === null) return undefined;
+		try {
+			return resolver();
+		} catch {
+			return undefined;
+		}
+	}
+
+	function detachSelection() {
+		if (unsubSelection !== null) {
+			try {
+				unsubSelection();
+			} catch {
+				// An invalidated handle never throws past its contract, but a
+				// surprise here must not break the disposer chain either.
+			}
+			unsubSelection = null;
+		}
+		currentHandle = undefined;
+	}
+
+	/** Re-resolve the frontmost handle; the active observable only pushes changes. */
+	function resync() {
+		const editor = service();
+		const active = editor && typeof editor.active === 'object' ? editor.active : null;
+		const handle = active && typeof active.getSnapshot === 'function' ? active.getSnapshot() : undefined;
+		if (handle === currentHandle) return;
+		detachSelection();
+		currentHandle = handle;
+		const selection = handle && typeof handle.selection === 'object' ? handle.selection : null;
+		if (selection && typeof selection.subscribe === 'function') {
+			try {
+				unsubSelection = selection.subscribe(notify);
+			} catch {
+				unsubSelection = null;
+			}
+		}
+		notify();
+	}
+
+	return {
+		subscribe,
+		/** Hand the bridge the module context so it can look the service up lazily. */
+		setResolver(fn) {
+			resolver = fn;
+		},
+		/** Refcounted service subscription, alive while an editor toolbar is mounted. */
+		retain() {
+			attached += 1;
+			if (attached === 1) {
+				const active = service()?.active;
+				if (active && typeof active.subscribe === 'function') {
+					try {
+						unsubActive = active.subscribe(resync);
+					} catch {
+						unsubActive = null;
+					}
+				}
+				// The active observable has no initial publish per the contract:
+				// read the frontmost handle once up front.
+				resync();
+			}
+			return () => {
+				attached -= 1;
+				if (attached === 0) {
+					if (unsubActive !== null) {
+						try {
+							unsubActive();
+						} catch {
+							// The service may have gone away first; disconnection is best-effort.
+						}
+						unsubActive = null;
+					}
+					detachSelection();
+				}
+			};
+		},
+		/** The frontmost editor's referenceable line range, or null. */
+		currentSelection() {
+			// Before the toolbar's retain effect runs (and on hotkey presses with
+			// no editor toolbar mounted) the bridge holds no subscription: resolve
+			// the frontmost handle directly so the read is never stale.
+			if (attached === 0) resync();
+			if (!currentHandle) return null;
+			try {
+				const selection = currentHandle.selection;
+				const snapshot = selection && typeof selection.getSnapshot === 'function' ? selection.getSnapshot() : null;
+				return FlrCore.usableEditorSelection(snapshot);
+			} catch {
+				return null;
+			}
+		},
+		/** Register the mounted editor toolbar's insert action for the shared hotkey. */
 		setInserter(fn) {
 			inserter = fn;
 			return () => {
@@ -943,6 +1078,99 @@ function DragToggleGuarded(props) {
 	return h(ToolbarBoundary, null, h(DragToggle, props));
 }
 
+/**
+ * Toolbar occupant for the dsh-editor seat `dsh-editor.actions`.
+ * Owner props: `{ address, path, sessionId }`; session standard props supply
+ * `sessionId`, `inputActions` and `t`. The selection comes from the frontmost
+ * handle through editorBridge; the insertion channel is the shared composer
+ * path, so the inserted text is byte-identical to a preview line reference.
+ *
+ * Hook discipline matches ToolbarActions: ONLY fixed React hooks — never
+ * hook-valued standard props — because those props can appear between renders
+ * and a conditional hook call would crash the slot mid-life.
+ */
+function EditorActions(props) {
+	const [, force] = React.useReducer((n) => n + 1, 0);
+	React.useEffect(editorBridge.retain, []);
+	React.useEffect(() => editorBridge.subscribe(force), [force]);
+
+	const t = props.t;
+	const inputActions = props.inputActions;
+	const path = props.path;
+	const latest = React.useRef({ sessionId: props.sessionId, inputActions, path });
+	latest.current = { sessionId: props.sessionId, inputActions, path };
+
+	// The bridge walks the live editor handle; keep a contract surprise from
+	// crashing the render and silently deleting the button.
+	let canAdd = false;
+	try {
+		canAdd = Boolean(inputActions && path && editorBridge.currentSelection());
+	} catch (error) {
+		console.error('[file-line-reference] editor toolbar state read failed:', error);
+	}
+
+	function performInsert() {
+		const { sessionId, inputActions: actions, path: editorPath } = latest.current;
+		if (!actions || !editorPath) return false;
+		const picked = editorBridge.currentSelection();
+		if (!picked) return false;
+		const cwd = sessionCwd(sessionId);
+		const relative = FlrCore.relativeMentionPath(editorPath, cwd);
+		const mention = FlrCore.formatMention(relative, [[picked.lineStart, picked.lineEnd]]);
+		if (!mention) return false;
+		const span = actions.captureInsertion();
+		// Same shape as the preview insert: always pad, focus first so the
+		// composer holds a live selection, retry once against a fresh span.
+		const text = FlrCore.padInsertion('', span.start, mention);
+		focusComposer(sessionId);
+		let inserted = actions.insertText(text, span);
+		if (!inserted) {
+			const retry = actions.captureInsertion();
+			inserted = actions.insertText(FlrCore.padInsertion('', retry.start, mention), retry);
+			if (!inserted) {
+				console.warn('[file-line-reference] composer rejected the editor line reference insertion');
+				return false;
+			}
+		}
+		focusComposer(sessionId);
+		return true;
+	}
+
+	// The shared hotkey resolves editor-first through this inserter.
+	React.useEffect(() => editorBridge.setInserter(() => {
+		try {
+			return performInsert();
+		} catch (error) {
+			console.warn('[file-line-reference] editor insertion attempt failed:', error);
+			return false;
+		}
+	}), []);
+
+	return h('button', {
+		className: 'flr-tool-btn',
+		type: 'button',
+		title: t('action.addLinesTitle'),
+		'aria-label': t('action.addLines'),
+		disabled: !canAdd,
+		// Same pointer/key discipline as the preview insert button:
+		// preventDefault keeps the compatibility mousedown from blurring the
+		// composer we just restored; keyboard activation (Enter/Space) never
+		// fires pointerdown, so the keydown path below is the keyboard's way in.
+		onPointerDown: (event) => {
+			if (event.button !== 0) return;
+			event.preventDefault();
+			performInsert();
+		},
+		onKeyDown: (event) => {
+			if (event.key === 'Enter' || event.key === ' ') performInsert();
+		}
+	}, ICON_CHAT);
+}
+
+function EditorActionsGuarded(props) {
+	return h(ToolbarBoundary, null, h(EditorActions, props));
+}
+
 /* ------------------------------------------------------------------ apply -- */
 function apply(ctx) {
 	console.info('[file-line-reference] apply started');
@@ -950,6 +1178,9 @@ function apply(ctx) {
 	const t = ctx.locale.bind(NS);
 	const sessions = ctx.get('sessions');
 	sessionsFacade = sessions;
+	// The dshEditor service resolves lazily: plugin apply order is not
+	// guaranteed, and an uninstalled editor must stay a silent no-op.
+	editorBridge.setResolver(() => ctx.get('dshEditor'));
 
 	ctx.effect(
 		() => ctx.uiConversation.userText.register({
@@ -993,6 +1224,13 @@ function apply(ctx) {
 		);
 	});
 
+	ctx.slots.inject('dsh-editor.actions', function* () {
+		yield ctx.slots.register(
+			{ name: 'dsh-editor.actions', id: 'flr-editor-add-lines', order: 10, locale: NS },
+			EditorActionsGuarded
+		);
+	});
+
 	ctx.inject(['shortcuts'], (scope) => {
 		scope.effect(() => {
 			const command = {
@@ -1012,6 +1250,12 @@ function apply(ctx) {
 					// Never act behind an open modal (desktop priority bypasses the
 					// modal check, so this is the only guard).
 					if (context && context.modal) return { status: 'pass' };
+					// Editor first: a frontmost editor selection outranks preview
+					// lines, so the one command covers whichever pane holds a pick.
+					const editorPerform = editorBridge.currentInserter();
+					if (editorPerform && editorBridge.currentSelection()) {
+						return { status: 'handled', run: editorPerform };
+					}
 					const perform = controller.currentInserter();
 					if (!perform || controller.currentLines().length === 0) return { status: 'pass' };
 					return { status: 'handled', run: perform };

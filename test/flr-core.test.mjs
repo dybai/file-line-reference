@@ -198,3 +198,41 @@ test('dragVerdict yields first, then requires one ready registered matching Sess
   assert.equal(core.dragVerdict(null), 'ignore');
   assert.equal(core.dragVerdict(undefined), 'ignore');
 });
+
+test('usableEditorSelection accepts a non-collapsed selection and returns its line range', () => {
+  assert.equal(typeof core.usableEditorSelection, 'function');
+  assert.deepEqual(
+    core.usableEditorSelection({ start: 100, end: 200, lineStart: 10, lineEnd: 25, text: 'hello\nworld' }),
+    { lineStart: 10, lineEnd: 25 }
+  );
+});
+
+test('usableEditorSelection accepts a one-line selection as a single-line range', () => {
+  assert.deepEqual(
+    core.usableEditorSelection({ start: 5, end: 9, lineStart: 7, lineEnd: 7, text: 'abcd' }),
+    { lineStart: 7, lineEnd: 7 }
+  );
+});
+
+test('usableEditorSelection rejects a collapsed caret selection', () => {
+  // dsh-editor contract §5.5: a collapsed selection reports text: null.
+  assert.equal(core.usableEditorSelection({ start: 5, end: 5, lineStart: 7, lineEnd: 7, text: null }), null);
+});
+
+test('usableEditorSelection rejects nullish and non-object snapshots', () => {
+  assert.equal(core.usableEditorSelection(null), null);
+  assert.equal(core.usableEditorSelection(undefined), null);
+  assert.equal(core.usableEditorSelection('selection'), null);
+});
+
+test('usableEditorSelection rejects invalid or missing line ranges', () => {
+  assert.equal(core.usableEditorSelection({ start: 0, end: 1, lineStart: 0, lineEnd: 1, text: 'x' }), null);
+  assert.equal(core.usableEditorSelection({ start: 0, end: 1, lineStart: 3, lineEnd: 2, text: 'x' }), null);
+  assert.equal(core.usableEditorSelection({ start: 0, end: 1, lineStart: 1.5, lineEnd: 2, text: 'x' }), null);
+  assert.equal(core.usableEditorSelection({ start: 0, end: 1, lineEnd: 2, text: 'x' }), null);
+});
+
+test('usableEditorSelection rejects snapshots without selection text', () => {
+  assert.equal(core.usableEditorSelection({ start: 0, end: 1, lineStart: 1, lineEnd: 2 }), null);
+  assert.equal(core.usableEditorSelection({ start: 0, end: 1, lineStart: 1, lineEnd: 2, text: '' }), null);
+});
