@@ -28,8 +28,8 @@
         "zh-cn": "文件行引用"
       },
       "description": {
-        "en": "Select file lines and insert @path:start-end references into the chat composer; reference selected lines from the dsh-editor editing area the same way; drag files or folders from the Files panel into the composer as @path mentions; click a reference chip to reopen the file at its start line.",
-        "zh-cn": "选中文件的若干行，把 @路径:起-止 行范围引用插入对话输入框；在 dsh-editor 编辑区选中若干行后同样插入行引用；也能把 Files 面板中的文件或目录拖到输入框，插入 @路径 引用；点击消息中的引用 chip 回到起始行。"
+        "en": "Select file lines and insert @path:start-end references into the chat composer; reference selected lines from the dsh-editor editing area the same way; select text in the rendered Markdown view and reference the located source lines; drag files or folders from the Files panel into the composer as @path mentions; click a reference chip to reopen the file at its start line.",
+        "zh-cn": "选中文件的若干行，把 @路径:起-止 行范围引用插入对话输入框；在 dsh-editor 编辑区选中若干行后同样插入行引用；在 Markdown 渲染视图中划选文字，同样按所选内容定位源码行插入引用；也能把 Files 面板中的文件或目录拖到输入框，插入 @路径 引用；点击消息中的引用 chip 回到起始行。"
       },
       "author": "dybai",
       "homepage": "https://github.com/dybai/file-line-reference",
@@ -38,11 +38,35 @@
       },
       "metadata": {
         "category": "productivity",
-        "keywords": ["dsh", "line-reference", "file-preview", "drag-and-drop", "file-mention"],
+        "keywords": ["dsh", "line-reference", "file-preview", "markdown", "drag-and-drop", "file-mention"],
         "labels": [],
         "sortKeys": {}
       },
       "versions": [
+        {
+          "version": "1.4.0",
+          "publishTimestamp": 1795000621,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/dybai/file-line-reference",
+            "commit": "bdeaad44a7a4050f0d7fe9c9a8987f44fe223f18"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.5"
+          }
+        },
+        {
+          "version": "1.3.0",
+          "publishTimestamp": 1794973413,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/dybai/file-line-reference",
+            "commit": "ef633d2a3b6b4ff3113bbbc8575a9afd0fa59891"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.5"
+          }
+        },
         {
           "version": "1.2.0",
           "publishTimestamp": 1794383346,
