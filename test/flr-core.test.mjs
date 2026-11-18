@@ -236,3 +236,152 @@ test('usableEditorSelection rejects snapshots without selection text', () => {
   assert.equal(core.usableEditorSelection({ start: 0, end: 1, lineStart: 1, lineEnd: 2 }), null);
   assert.equal(core.usableEditorSelection({ start: 0, end: 1, lineStart: 1, lineEnd: 2, text: '' }), null);
 });
+
+test('previewRendererKind classifies the rendered Markdown viewer as markdown', () => {
+  assert.equal(
+    core.previewRendererKind('@deepseek-ai/dsh-client-ui-sidebar-documentpreview/markdown'),
+    'markdown'
+  );
+});
+
+test('previewRendererKind classifies the plain-text and code viewers as lines', () => {
+  assert.equal(
+    core.previewRendererKind('@deepseek-ai/dsh-client-ui-sidebar-documentpreview/text'),
+    'lines'
+  );
+  assert.equal(
+    core.previewRendererKind('@deepseek-ai/dsh-client-ui-sidebar-documentpreview/code'),
+    'lines'
+  );
+});
+
+test('previewRendererKind classifies image, pdf, excel, and html viewers as other', () => {
+  assert.equal(
+    core.previewRendererKind('@deepseek-ai/dsh-client-ui-sidebar-documentpreview/image'),
+    'other'
+  );
+  assert.equal(
+    core.previewRendererKind('@deepseek-ai/dsh-client-ui-sidebar-documentpreview/pdf'),
+    'other'
+  );
+  assert.equal(
+    core.previewRendererKind('@deepseek-ai/dsh-client-ui-sidebar-documentpreview/excel'),
+    'other'
+  );
+  assert.equal(
+    core.previewRendererKind('@deepseek-ai/dsh-client-ui-sidebar-documentpreview/html'),
+    'other'
+  );
+});
+
+test('previewRendererKind treats a missing or malformed renderer id as other', () => {
+  assert.equal(core.previewRendererKind(null), 'other');
+  assert.equal(core.previewRendererKind(undefined), 'other');
+  assert.equal(core.previewRendererKind(''), 'other');
+  assert.equal(core.previewRendererKind('unexpected-renderer'), 'other');
+  assert.equal(core.previewRendererKind(42), 'other');
+});
+
+test('normalizeForMatch collapses whitespace runs and strips zero-width characters', () => {
+  assert.equal(core.normalizeForMatch('  a\t\tb \n c  '), 'a b c');
+  assert.equal(core.normalizeForMatch('a\u200bb\u200cc\ufeffd'), 'abcd');
+  assert.equal(core.normalizeForMatch(''), '');
+  assert.equal(core.normalizeForMatch(undefined), '');
+  assert.equal(core.normalizeForMatch(42), '');
+});
+
+test('createSourceAligner locates single-line and multi-line needles by 1-based lines', () => {
+  const aligner = core.createSourceAligner('alpha\nbeta\ngamma');
+  assert.equal(aligner.lineCount, 3);
+  assert.deepEqual(aligner.locate('beta', 0), { startLine: 2, endLine: 2 });
+  assert.deepEqual(aligner.locate('beta\ngamma', 0), { startLine: 2, endLine: 3 });
+  assert.equal(aligner.locate('delta', 0), null);
+});
+
+test('createSourceAligner matches rendered text against reflowed source whitespace', () => {
+  // Rendered markdown joins hard-wrapped source lines into one visual line.
+  const aligner = core.createSourceAligner('# Title\nThis sentence\n  wraps across\nsource lines.\n');
+  assert.deepEqual(aligner.locate('This sentence wraps across source lines.', 0), { startLine: 2, endLine: 4 });
+});
+
+test('createSourceAligner keeps the monotonic cursor semantics through afterLine', () => {
+  const aligner = core.createSourceAligner('apple\nbanana\napple\ncherry');
+  assert.deepEqual(aligner.locate('apple', 0), { startLine: 1, endLine: 1 });
+  assert.deepEqual(aligner.locate('apple', 1), { startLine: 3, endLine: 3 });
+  // A match must START after afterLine; nothing after the last line stays null.
+  assert.equal(aligner.locate('apple', 3), null);
+  assert.equal(aligner.locate('', 0), null);
+});
+
+test('locateUnique answers null for zero or repeated matches after the cursor', () => {
+  const aligner = core.createSourceAligner('one\ntwo\none\nthree');
+  assert.deepEqual(aligner.locateUnique('two', 0), { startLine: 2, endLine: 2 });
+  assert.deepEqual(aligner.locateUnique('three', 0), { startLine: 4, endLine: 4 });
+  assert.equal(aligner.locateUnique('one', 0), null);
+  assert.deepEqual(aligner.locateUnique('one', 2), { startLine: 3, endLine: 3 });
+  assert.equal(aligner.locateUnique('missing', 0), null);
+});
+
+test('alignBlockMap walks blocks monotonically and keeps the cursor across misses', () => {
+  const source = 'intro\n\nstep one\n\nsection\nstep one again\n\noutro';
+  const aligner = core.createSourceAligner(source);
+  const map = core.alignBlockMap(aligner, [
+    'intro',
+    'step one',
+    'unfindable rendered text',
+    'step one again',
+    'outro'
+  ]);
+  assert.deepEqual(map[0], { startLine: 1, endLine: 1 });
+  assert.deepEqual(map[1], { startLine: 3, endLine: 3 });
+  assert.equal(map[2], null);
+  // The miss must not advance the cursor: block 4 aligns after block 2's end.
+  assert.deepEqual(map[3], { startLine: 6, endLine: 6 });
+  assert.deepEqual(map[4], { startLine: 8, endLine: 8 });
+});
+
+test('alignBlockMap resolves repeated block text in document order', () => {
+  const source = '- apple\n- banana\n- apple\n- cherry';
+  const aligner = core.createSourceAligner(source);
+  const map = core.alignBlockMap(aligner, ['apple', 'banana', 'apple', 'cherry']);
+  assert.deepEqual(map[0], { startLine: 1, endLine: 1 });
+  assert.deepEqual(map[1], { startLine: 2, endLine: 2 });
+  assert.deepEqual(map[2], { startLine: 3, endLine: 3 });
+  assert.deepEqual(map[3], { startLine: 4, endLine: 4 });
+});
+
+test('locateSelection prefers the block window and falls back to unique-after-floor', () => {
+  const source = 'intro\nmark A\nmark B\nmark A\ntail';
+  const aligner = core.createSourceAligner(source);
+  const block = { startLine: 4, endLine: 4 };
+  // In-window match wins even though an earlier copy exists.
+  assert.deepEqual(core.locateSelection(aligner, 'mark A', 1, block), { startLine: 4, endLine: 4 });
+  // No window: ambiguous after the floor is a refusal.
+  assert.equal(core.locateSelection(aligner, 'mark A', 1, null), null);
+  // No window and unique: resolved.
+  assert.deepEqual(core.locateSelection(aligner, 'tail', 1, null), { startLine: 5, endLine: 5 });
+  // Window that contains no copy: falls back to uniqueness, which is ambiguous here.
+  assert.equal(core.locateSelection(aligner, 'mark A', 1, { startLine: 3, endLine: 3 }), null);
+});
+
+test('leadingFrontmatterLines counts only a leading frontmatter block', () => {
+  assert.equal(core.leadingFrontmatterLines('---\ntitle: x\n---\nbody'), 3);
+  assert.equal(core.leadingFrontmatterLines('---\ntitle: x\nbody'), 0);
+  assert.equal(core.leadingFrontmatterLines('no frontmatter'), 0);
+  assert.equal(core.leadingFrontmatterLines(''), 0);
+  assert.equal(core.leadingFrontmatterLines('---\n---\nbody'), 2);
+});
+
+test('createSourceAligner matches rendered list items against source list markers', () => {
+  // Rendered <li> text drops the "- " / "1. " markers the source carries.
+  const aligner = core.createSourceAligner('# List\n\n- apple\n- banana\n\n1. first\n2. second\n');
+  assert.deepEqual(aligner.locate('apple', 0), { startLine: 3, endLine: 3 });
+  assert.deepEqual(aligner.locate('first second', 0), { startLine: 6, endLine: 7 });
+  assert.deepEqual(aligner.locate('apple banana first second', 0), { startLine: 3, endLine: 7 });
+});
+
+test('createSourceAligner matches rendered text against emphasis markers and quotes', () => {
+  const aligner = core.createSourceAligner('> **bold** move\n\na `code` _name_ | ok\n');
+  assert.deepEqual(aligner.locate('bold move', 0), { startLine: 1, endLine: 1 });
+  assert.deepEqual(aligner.locate('a code name ok', 0), { startLine: 3, endLine: 3 });
+});

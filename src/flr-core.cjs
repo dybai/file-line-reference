@@ -301,6 +301,218 @@
 		return { lineStart, lineEnd };
 	}
 
+	/**
+	 * Classify the document preview's active renderer from its
+	 * `data-document-preview` attribute (the preview frame root publishes the
+	 * definition id, e.g. `…/sidebar-documentpreview/markdown`).
+	 *
+	 * Only the plain-text and code viewers expose selectable source lines; the
+	 * rendered-Markdown viewer shows content without any line-bearing DOM, so
+	 * the toolbar must explain itself instead of staying silently disabled.
+	 * @param rendererId - the attribute value, or null when no frame is mounted.
+	 * @returns `'markdown'` for the rendered-Markdown viewer, `'lines'` for the
+	 *   viewers that expose source-line rows, `'other'` otherwise.
+	 */
+	function previewRendererKind(rendererId) {
+		if (typeof rendererId !== 'string' || rendererId === '') return 'other';
+		const suffix = rendererId.split('/').at(-1) ?? '';
+		if (suffix === 'markdown') return 'markdown';
+		if (suffix === 'text' || suffix === 'code') return 'lines';
+		return 'other';
+	}
+
+	/**
+	 * Normalize text for rendered-vs-source comparison.
+	 *
+	 * Rendered Markdown drops what the source carries: list markers, quote
+	 * markers, heading hashes, emphasis/code/table punctuation — and joins
+	 * hard-wrapped lines. Both the fetched source and the user's selection
+	 * text therefore run through the SAME symmetric normalization: strip
+	 * leading block scaffolding per line, drop inline marker characters,
+	 * collapse whitespace runs to one space, drop zero-width characters.
+	 * Symmetry is what lets a rendered needle match its source span without
+	 * a markdown parser. Anything non-string answers ''.
+	 */
+	function normalizeForMatch(text) {
+		if (typeof text !== 'string') return '';
+		const out = [];
+		forEachAlignableChar(text, ({ ch, pendingSpace }) => {
+			if (pendingSpace && out.length > 0) out.push(' ');
+			out.push(ch);
+		});
+		return out.join('').trim();
+	}
+
+	/** Inline characters the renderer turns into styling rather than text. */
+	const INLINE_STRIP = new Set(['*', '_', '`', '~', '|']);
+
+	/**
+	 * Walk one text's alignable characters, line by line. Leading block
+	 * scaffolding (indentation, quotes, heading hashes, list markers) is
+	 * stripped repeatedly per line; inline marker characters are dropped;
+	 * whitespace collapses. `pendingSpace` reports a suppressed whitespace run
+	 * before `ch` so the caller can keep word separation across lines.
+	 * @param text - source or rendered text.
+	 * @param emit - callback per kept character.
+	 */
+	function forEachAlignableChar(text, emit) {
+		let line = 1;
+		let pendingSpace = false;
+		for (const rawLine of text.split('\n')) {
+			let rest = rawLine;
+			for (;;) {
+				const match = /^\s+|^>+|^#{1,6}\s+|^(?:[-*+]|\d{1,9}[.)])\s+/u.exec(rest);
+				if (match === null) break;
+				rest = rest.slice(match[0].length);
+				pendingSpace = true;
+			}
+			for (const ch of rest) {
+				if (ch === '\u200b' || ch === '\u200c' || ch === '\u200d' || ch === '\ufeff') continue;
+				if (INLINE_STRIP.has(ch)) continue;
+				if (/\s/u.test(ch)) {
+					pendingSpace = true;
+					continue;
+				}
+				emit({ ch, line, pendingSpace });
+				pendingSpace = false;
+			}
+			line += 1;
+			// A line break separates words on both normalization sides, exactly
+			// like the whitespace runs it may carry.
+			pendingSpace = true;
+		}
+	}
+
+	/**
+	 * Count the source lines consumed by a leading YAML frontmatter block —
+	 * the same leading-`---` split the Markdown renderer applies before
+	 * parsing, so alignment can skip lines that never reach the rendered body.
+	 * An unterminated block is not frontmatter and answers 0.
+	 */
+	function leadingFrontmatterLines(text) {
+		if (typeof text !== 'string' || !text.startsWith('---')) return 0;
+		const lines = text.split('\n');
+		if (lines[0].trim() !== '---') return 0;
+		for (let i = 1; i < lines.length; i++) {
+			if (lines[i].trim() === '---') return i + 1;
+		}
+		return 0;
+	}
+
+	/**
+	 * A locator that maps rendered Markdown text fragments to 1-based source
+	 * lines by whitespace-insensitive matching over one fetched source text.
+	 *
+	 * The source is normalized once (whitespace runs collapse, zero-width
+	 * characters drop) while every normalized character remembers its source
+	 * line, so `indexOf` over the normalized text answers exact line ranges.
+	 * All searches are forward-only through `afterLine`, which is what makes
+	 * repeated content resolve in document order instead of matching the
+	 * wrong copy.
+	 */
+	function createSourceAligner(sourceText) {
+		const text = typeof sourceText === 'string' ? sourceText : '';
+		const normalized = [];
+		const lineOf = [];
+		forEachAlignableChar(text, ({ ch, line, pendingSpace }) => {
+			if (pendingSpace && normalized.length > 0) {
+				normalized.push(' ');
+				lineOf.push(line);
+			}
+			normalized.push(ch);
+			lineOf.push(line);
+		});
+		const haystack = normalized.join('');
+		const lineCount = text === '' ? 1 : text.split('\n').length;
+
+		/** First normalized offset whose character sits on line `L` or later. */
+		function offsetOfLine(line) {
+			let low = 0;
+			let high = lineOf.length;
+			while (low < high) {
+				const mid = (low + high) >> 1;
+				if (lineOf[mid] < line) low = mid + 1;
+				else high = mid;
+			}
+			return low;
+		}
+
+		function toRange(start, end) {
+			return { startLine: lineOf[start], endLine: lineOf[end - 1] };
+		}
+
+		return {
+			lineCount,
+			/** First needle occurrence starting strictly after `afterLine`, or null. */
+			locate(needleText, afterLine) {
+				const needle = normalizeForMatch(needleText);
+				if (needle === '' || haystack === '') return null;
+				const from = offsetOfLine(afterLine + 1);
+				if (from >= haystack.length) return null;
+				const start = haystack.indexOf(needle, from);
+				if (start < 0) return null;
+				return toRange(start, start + needle.length);
+			},
+			/** The occurrence after `afterLine` only when it is the last one; ambiguity answers null. */
+			locateUnique(needleText, afterLine) {
+				const needle = normalizeForMatch(needleText);
+				const first = this.locate(needle, afterLine);
+				if (first === null) return null;
+				const second = this.locate(needle, first.endLine);
+				return second === null ? first : null;
+			}
+		};
+	}
+
+	/**
+	 * Align top-level rendered blocks to source lines in one document-order
+	 * walk. Each block searches strictly after the previous hit's end, so
+	 * repeated block text resolves copy by copy; a block that cannot be found
+	 * answers null WITHOUT advancing the cursor, so later blocks stay exact.
+	 * @param aligner - an aligner over the fetched source text.
+	 * @param texts - rendered block texts in document order.
+	 * @returns one range or null per block.
+	 */
+	function alignBlockMap(aligner, texts) {
+		const map = [];
+		let cursor = 0;
+		const list = Array.isArray(texts) ? texts : [];
+		for (const block of list) {
+			const range = aligner && typeof aligner.locate === 'function' ? aligner.locate(block, cursor) : null;
+			if (range === null) map.push(null);
+			else {
+				map.push(range);
+				cursor = range.endLine;
+			}
+		}
+		return map;
+	}
+
+	/**
+	 * Locate one user selection: prefer a hit inside the containing block's
+	 * line window (exact placement), else fall back to a UNIQUE match after
+	 * `floorLine` (the last confidently aligned line before the selection).
+	 * Ambiguity and misses answer null — a wrong reference is worse than no
+	 * reference, so the caller must treat null as "do not insert".
+	 * @param aligner - an aligner over the fetched source text.
+	 * @param selectionText - the selection's rendered text.
+	 * @param floorLine - last aligned line before the selection, or 0.
+	 * @param window - the containing block's line range, when known.
+	 * @returns `{ startLine, endLine }` or null.
+	 */
+	function locateSelection(aligner, selectionText, floorLine, window) {
+		if (!aligner || typeof aligner.locateUnique !== 'function') return null;
+		const needle = normalizeForMatch(selectionText);
+		if (needle === '') return null;
+		if (window !== null && typeof window === 'object'
+			&& Number.isInteger(window.startLine) && Number.isInteger(window.endLine)) {
+			const inside = aligner.locate(needle, window.startLine - 1);
+			if (inside !== null && inside.endLine <= window.endLine) return inside;
+		}
+		const floor = Number.isInteger(floorLine) && floorLine > 0 ? floorLine : 0;
+		return aligner.locateUnique(needle, floor);
+	}
+
 	return {
 		stripTrailingPunctuation,
 		parseLineSuffix,
@@ -315,6 +527,12 @@
 		readToggleState,
 		dragVerdict,
 		usableEditorSelection,
+		previewRendererKind,
+		normalizeForMatch,
+		leadingFrontmatterLines,
+		createSourceAligner,
+		alignBlockMap,
+		locateSelection,
 		fileAddress,
 		padInsertion
 	};

@@ -292,6 +292,218 @@ window.__ModuleLoader__.load({
 		return { lineStart, lineEnd };
 	}
 
+	/**
+	 * Classify the document preview's active renderer from its
+	 * `data-document-preview` attribute (the preview frame root publishes the
+	 * definition id, e.g. `…/sidebar-documentpreview/markdown`).
+	 *
+	 * Only the plain-text and code viewers expose selectable source lines; the
+	 * rendered-Markdown viewer shows content without any line-bearing DOM, so
+	 * the toolbar must explain itself instead of staying silently disabled.
+	 * @param rendererId - the attribute value, or null when no frame is mounted.
+	 * @returns `'markdown'` for the rendered-Markdown viewer, `'lines'` for the
+	 *   viewers that expose source-line rows, `'other'` otherwise.
+	 */
+	function previewRendererKind(rendererId) {
+		if (typeof rendererId !== 'string' || rendererId === '') return 'other';
+		const suffix = rendererId.split('/').at(-1) ?? '';
+		if (suffix === 'markdown') return 'markdown';
+		if (suffix === 'text' || suffix === 'code') return 'lines';
+		return 'other';
+	}
+
+	/**
+	 * Normalize text for rendered-vs-source comparison.
+	 *
+	 * Rendered Markdown drops what the source carries: list markers, quote
+	 * markers, heading hashes, emphasis/code/table punctuation — and joins
+	 * hard-wrapped lines. Both the fetched source and the user's selection
+	 * text therefore run through the SAME symmetric normalization: strip
+	 * leading block scaffolding per line, drop inline marker characters,
+	 * collapse whitespace runs to one space, drop zero-width characters.
+	 * Symmetry is what lets a rendered needle match its source span without
+	 * a markdown parser. Anything non-string answers ''.
+	 */
+	function normalizeForMatch(text) {
+		if (typeof text !== 'string') return '';
+		const out = [];
+		forEachAlignableChar(text, ({ ch, pendingSpace }) => {
+			if (pendingSpace && out.length > 0) out.push(' ');
+			out.push(ch);
+		});
+		return out.join('').trim();
+	}
+
+	/** Inline characters the renderer turns into styling rather than text. */
+	const INLINE_STRIP = new Set(['*', '_', '`', '~', '|']);
+
+	/**
+	 * Walk one text's alignable characters, line by line. Leading block
+	 * scaffolding (indentation, quotes, heading hashes, list markers) is
+	 * stripped repeatedly per line; inline marker characters are dropped;
+	 * whitespace collapses. `pendingSpace` reports a suppressed whitespace run
+	 * before `ch` so the caller can keep word separation across lines.
+	 * @param text - source or rendered text.
+	 * @param emit - callback per kept character.
+	 */
+	function forEachAlignableChar(text, emit) {
+		let line = 1;
+		let pendingSpace = false;
+		for (const rawLine of text.split('\n')) {
+			let rest = rawLine;
+			for (;;) {
+				const match = /^\s+|^>+|^#{1,6}\s+|^(?:[-*+]|\d{1,9}[.)])\s+/u.exec(rest);
+				if (match === null) break;
+				rest = rest.slice(match[0].length);
+				pendingSpace = true;
+			}
+			for (const ch of rest) {
+				if (ch === '\u200b' || ch === '\u200c' || ch === '\u200d' || ch === '\ufeff') continue;
+				if (INLINE_STRIP.has(ch)) continue;
+				if (/\s/u.test(ch)) {
+					pendingSpace = true;
+					continue;
+				}
+				emit({ ch, line, pendingSpace });
+				pendingSpace = false;
+			}
+			line += 1;
+			// A line break separates words on both normalization sides, exactly
+			// like the whitespace runs it may carry.
+			pendingSpace = true;
+		}
+	}
+
+	/**
+	 * Count the source lines consumed by a leading YAML frontmatter block —
+	 * the same leading-`---` split the Markdown renderer applies before
+	 * parsing, so alignment can skip lines that never reach the rendered body.
+	 * An unterminated block is not frontmatter and answers 0.
+	 */
+	function leadingFrontmatterLines(text) {
+		if (typeof text !== 'string' || !text.startsWith('---')) return 0;
+		const lines = text.split('\n');
+		if (lines[0].trim() !== '---') return 0;
+		for (let i = 1; i < lines.length; i++) {
+			if (lines[i].trim() === '---') return i + 1;
+		}
+		return 0;
+	}
+
+	/**
+	 * A locator that maps rendered Markdown text fragments to 1-based source
+	 * lines by whitespace-insensitive matching over one fetched source text.
+	 *
+	 * The source is normalized once (whitespace runs collapse, zero-width
+	 * characters drop) while every normalized character remembers its source
+	 * line, so `indexOf` over the normalized text answers exact line ranges.
+	 * All searches are forward-only through `afterLine`, which is what makes
+	 * repeated content resolve in document order instead of matching the
+	 * wrong copy.
+	 */
+	function createSourceAligner(sourceText) {
+		const text = typeof sourceText === 'string' ? sourceText : '';
+		const normalized = [];
+		const lineOf = [];
+		forEachAlignableChar(text, ({ ch, line, pendingSpace }) => {
+			if (pendingSpace && normalized.length > 0) {
+				normalized.push(' ');
+				lineOf.push(line);
+			}
+			normalized.push(ch);
+			lineOf.push(line);
+		});
+		const haystack = normalized.join('');
+		const lineCount = text === '' ? 1 : text.split('\n').length;
+
+		/** First normalized offset whose character sits on line `L` or later. */
+		function offsetOfLine(line) {
+			let low = 0;
+			let high = lineOf.length;
+			while (low < high) {
+				const mid = (low + high) >> 1;
+				if (lineOf[mid] < line) low = mid + 1;
+				else high = mid;
+			}
+			return low;
+		}
+
+		function toRange(start, end) {
+			return { startLine: lineOf[start], endLine: lineOf[end - 1] };
+		}
+
+		return {
+			lineCount,
+			/** First needle occurrence starting strictly after `afterLine`, or null. */
+			locate(needleText, afterLine) {
+				const needle = normalizeForMatch(needleText);
+				if (needle === '' || haystack === '') return null;
+				const from = offsetOfLine(afterLine + 1);
+				if (from >= haystack.length) return null;
+				const start = haystack.indexOf(needle, from);
+				if (start < 0) return null;
+				return toRange(start, start + needle.length);
+			},
+			/** The occurrence after `afterLine` only when it is the last one; ambiguity answers null. */
+			locateUnique(needleText, afterLine) {
+				const needle = normalizeForMatch(needleText);
+				const first = this.locate(needle, afterLine);
+				if (first === null) return null;
+				const second = this.locate(needle, first.endLine);
+				return second === null ? first : null;
+			}
+		};
+	}
+
+	/**
+	 * Align top-level rendered blocks to source lines in one document-order
+	 * walk. Each block searches strictly after the previous hit's end, so
+	 * repeated block text resolves copy by copy; a block that cannot be found
+	 * answers null WITHOUT advancing the cursor, so later blocks stay exact.
+	 * @param aligner - an aligner over the fetched source text.
+	 * @param texts - rendered block texts in document order.
+	 * @returns one range or null per block.
+	 */
+	function alignBlockMap(aligner, texts) {
+		const map = [];
+		let cursor = 0;
+		const list = Array.isArray(texts) ? texts : [];
+		for (const block of list) {
+			const range = aligner && typeof aligner.locate === 'function' ? aligner.locate(block, cursor) : null;
+			if (range === null) map.push(null);
+			else {
+				map.push(range);
+				cursor = range.endLine;
+			}
+		}
+		return map;
+	}
+
+	/**
+	 * Locate one user selection: prefer a hit inside the containing block's
+	 * line window (exact placement), else fall back to a UNIQUE match after
+	 * `floorLine` (the last confidently aligned line before the selection).
+	 * Ambiguity and misses answer null — a wrong reference is worse than no
+	 * reference, so the caller must treat null as "do not insert".
+	 * @param aligner - an aligner over the fetched source text.
+	 * @param selectionText - the selection's rendered text.
+	 * @param floorLine - last aligned line before the selection, or 0.
+	 * @param window - the containing block's line range, when known.
+	 * @returns `{ startLine, endLine }` or null.
+	 */
+	function locateSelection(aligner, selectionText, floorLine, window) {
+		if (!aligner || typeof aligner.locateUnique !== 'function') return null;
+		const needle = normalizeForMatch(selectionText);
+		if (needle === '') return null;
+		if (window !== null && typeof window === 'object'
+			&& Number.isInteger(window.startLine) && Number.isInteger(window.endLine)) {
+			const inside = aligner.locate(needle, window.startLine - 1);
+			if (inside !== null && inside.endLine <= window.endLine) return inside;
+		}
+		const floor = Number.isInteger(floorLine) && floorLine > 0 ? floorLine : 0;
+		return aligner.locateUnique(needle, floor);
+	}
+
 	return {
 		stripTrailingPunctuation,
 		parseLineSuffix,
@@ -306,6 +518,12 @@ window.__ModuleLoader__.load({
 		readToggleState,
 		dragVerdict,
 		usableEditorSelection,
+		previewRendererKind,
+		normalizeForMatch,
+		leadingFrontmatterLines,
+		createSourceAligner,
+		alignBlockMap,
+		locateSelection,
 		fileAddress,
 		padInsertion
 	};
@@ -321,9 +539,13 @@ const NUMBERS_CLASS = 'flr-numbers';
 
 const zh = {
 	'meta.title': '文件行引用',
-	'meta.description': '选中文件的若干行，把 @路径:起-止 行范围引用插入对话输入框（Ctrl+Shift+L）；点击消息中的引用 chip 回到起始行；也能把文件面板中的文件或目录拖到输入框插入 @路径 引用，或在 dsh-editor 编辑区选中若干行后同样插入行引用。',
+	'meta.description': '选中文件的若干行，把 @路径:起-止 行范围引用插入对话输入框（Ctrl+Shift+L）；点击消息中的引用 chip 回到起始行；也能把文件面板中的文件或目录拖到输入框插入 @路径 引用，或在 dsh-editor 编辑区选中若干行后同样插入行引用；在 Markdown 渲染视图中划选文字，同样按所选内容定位源码行插入引用。',
 	'action.addLines': '添加选中行到对话',
 	'action.addLinesTitle': '把选中的行以 @路径:起-止 引用插入输入框（Ctrl+Shift+L）',
+	'action.addLinesMarkdown': 'Markdown 渲染视图：划选文字即可引用',
+	'action.addLinesMarkdownTitle': 'Markdown 渲染视图：直接划选文字，松开鼠标后按所选内容定位源码行并插入引用（Ctrl+Shift+L）；表格等改写较大的块可能定位失败，届时可点击旁侧行选按钮切换纯文本视图',
+	'action.addLinesMarkdownMiss': '无法可靠定位所选内容的源码行（渲染改写或文件已变动），未插入；可点击旁侧行选按钮切换纯文本视图后重试',
+	'action.switchPlainText': '切换到纯文本视图（渲染视图用划选引用；纯文本视图支持行选模式与行号）',
 	'action.lineMode': '行选择模式',
 	'action.lineModeHint': '行选择模式：点击行选中整行，Shift+点击连选，Ctrl/Cmd+点击增减；再次点击关闭',
 	'action.numbers': '行号',
@@ -335,9 +557,13 @@ const zh = {
 
 const en = {
 	'meta.title': 'File Line Reference',
-	'meta.description': 'Select file lines and insert @path:start-end references into the chat composer (Ctrl+Shift+L); click a reference chip in a message to reopen the file at its start line; drag a file or folder from the Files panel into the composer to insert an @path reference, or select lines in the dsh-editor editing area and reference them the same way.',
+	'meta.description': 'Select file lines and insert @path:start-end references into the chat composer (Ctrl+Shift+L); click a reference chip in a message to reopen the file at its start line; drag a file or folder from the Files panel into the composer to insert an @path reference, or select lines in the dsh-editor editing area and reference them the same way; select text in the rendered Markdown view to reference the located source lines.',
 	'action.addLines': 'Add selected lines to chat',
 	'action.addLinesTitle': 'Insert the selected lines as @path:start-end into the composer (Ctrl+Shift+L)',
+	'action.addLinesMarkdown': 'The rendered Markdown view: select text to reference it',
+	'action.addLinesMarkdownTitle': 'The rendered Markdown view: select text and the reference locates the source lines from what you selected (Ctrl+Shift+L); heavily rewritten blocks such as tables may fail to locate — use the line-select button beside to switch to the plain-text viewer',
+	'action.addLinesMarkdownMiss': 'The selection could not be located in the source reliably (rendering rewrite or file changed); nothing was inserted — switch to the plain-text viewer via the line-select button and retry',
+	'action.switchPlainText': 'Switch to the plain-text viewer (the rendered view references by selection; the plain-text viewer supports line-select mode and line numbers)',
 	'action.lineMode': 'Line select mode',
 	'action.lineModeHint': 'Line select mode: click selects a line, Shift+click extends, Ctrl/Cmd+click toggles; click again to turn off',
 	'action.numbers': 'Line numbers',
@@ -426,7 +652,8 @@ const controller = (() => {
 		selected: [],
 		anchor: null,
 		mouse: null,
-		numbers: true
+		numbers: true,
+		markdownMiss: false
 	};
 	const listeners = new Set();
 	const decorated = new Set();
@@ -492,15 +719,34 @@ const controller = (() => {
 		return { kind: 'plain', container };
 	}
 
+	/**
+	 * Renderer kind of the visible preview frame, read from the frame root's
+	 * `data-document-preview` definition id (bundle contract: PreviewFrame
+	 * spreads it onto its root div). Same visibility preference as
+	 * `queryTarget()` so a floating preview does not shadow the active one.
+	 * A pure read at render time; a later selectionchange or toolbar toggle
+	 * re-renders with a fresh value after a viewer switch.
+	 */
+	function rendererKind() {
+		const isVisible = (el) => el.getClientRects().length > 0;
+		const frames = [...document.querySelectorAll('[data-document-preview]')];
+		const frame = frames.find(isVisible) ?? frames[0];
+		return FlrCore.previewRendererKind(frame instanceof Element ? frame.getAttribute('data-document-preview') : null);
+	}
+
 	/** Discard picks when the preview body changed underneath (tab or file switch). */
 	function ensureFreshTarget() {
 		const target = queryTarget();
-		const identity = target ? target.container : null;
+		// Line-bearing renderers identify by their row container; the rendered
+		// Markdown view has no rows, so its frame root stands in — a file or
+		// viewer switch still invalidates whatever was picked before.
+		const identity = target ? target.container : markdownFrameRoot();
 		if (identity !== lastContainer) {
 			lastContainer = identity;
 			clearHighlight();
 			state.selected = [];
 			state.anchor = null;
+			state.markdownMiss = false;
 			if (state.mode) {
 				state.mode = false;
 				notify();
@@ -581,7 +827,19 @@ const controller = (() => {
 	function onSelectionChange() {
 		const target = ensureFreshTarget();
 		const selection = document.getSelection();
-		if (!target || !selection || selection.rangeCount === 0 || selection.isCollapsed) {
+		const usable = selection !== null && selection.rangeCount > 0 && !selection.isCollapsed;
+		if (!target) {
+			// The rendered-Markdown view exposes no line rows: the raw selection
+			// aligns against the fetched source instead. Every other row-less
+			// renderer (image, pdf, …) simply has nothing to track.
+			if (rendererKind() === 'markdown') trackMarkdownSelection(usable ? selection : null);
+			else if (state.mouse !== null) {
+				state.mouse = null;
+				notify();
+			}
+			return;
+		}
+		if (!usable) {
 			if (state.mouse !== null) {
 				state.mouse = null;
 				notify();
@@ -606,6 +864,124 @@ const controller = (() => {
 		}
 	}
 
+	/** Whether a DOM node sits inside the given frame (text nodes via parent). */
+	function insideFrame(frame, node) {
+		const el = node instanceof Element ? node : node?.parentElement;
+		return el instanceof Element && frame.contains(el);
+	}
+
+	/**
+	 * Align one rendered-view selection to source lines. The containing
+	 * blocks' line window guides placement, the last confidently aligned
+	 * block before the selection bounds the fallback search, and ambiguity
+	 * answers null — recorded as a "miss" so the toolbar can explain the
+	 * refusal instead of staying silently disabled.
+	 */
+	function locateInMarkdown(entry, frame, selection, text) {
+		const root = frame.querySelector('[data-document-markdown]');
+		if (!root || root.children.length === 0) return null;
+		const markdownRoot = root.children[root.children.length - 1];
+		const blocks = [...markdownRoot.children];
+		if (blocks.length === 0) return null;
+		const first = FlrCore.normalizeForMatch(blocks[0]?.textContent ?? '').slice(0, 120);
+		const last = FlrCore.normalizeForMatch((blocks[blocks.length - 1]?.textContent ?? '')).slice(0, 120);
+		const signature = `${blocks.length}:${first}:${last}`;
+		if (signature !== entry.blocksSig) {
+			entry.blocksSig = signature;
+			entry.blockMap = FlrCore.alignBlockMap(entry.aligner, blocks.map((block) => block.textContent ?? ''));
+		}
+		const indexOfNode = (node) => {
+			let el = node instanceof Element ? node : node?.parentElement;
+			if (!(el instanceof Element)) return -1;
+			while (el.parentElement !== null && el.parentElement !== markdownRoot) el = el.parentElement;
+			return el.parentElement === markdownRoot ? blocks.indexOf(el) : -1;
+		};
+		const anchorIndex = indexOfNode(selection.anchorNode);
+		const focusIndex = indexOfNode(selection.focusNode);
+		const knownFirst = anchorIndex >= 0 && focusIndex >= 0
+			? Math.min(anchorIndex, focusIndex)
+			: Math.max(anchorIndex, focusIndex);
+		let floor = entry.floor;
+		for (let i = knownFirst - 1; i >= 0; i--) {
+			const range = entry.blockMap[i];
+			if (range !== null) {
+				floor = range.endLine;
+				break;
+			}
+		}
+		let window = null;
+		const anchorRange = anchorIndex >= 0 ? entry.blockMap[anchorIndex] : null;
+		const focusRange = focusIndex >= 0 ? entry.blockMap[focusIndex] : null;
+		if (anchorRange !== null && focusRange !== null) {
+			window = {
+				startLine: Math.min(anchorRange.startLine, focusRange.startLine),
+				endLine: Math.max(anchorRange.endLine, focusRange.endLine)
+			};
+		} else {
+			window = anchorRange ?? focusRange;
+		}
+		return FlrCore.locateSelection(entry.aligner, text, floor, window);
+	}
+
+	let markdownSelectionSeq = 0;
+
+	/**
+	 * Rendered-view counterpart of the text-view drag tracking: align the raw
+	 * selection against the fetched source and record the line range as the
+	 * drag pick. Async and sequence-guarded — a faster following event
+	 * supersedes an in-flight alignment, and every failure path clears the
+	 * pick rather than keeping a stale or wrong range.
+	 */
+	function trackMarkdownSelection(selection) {
+		const seq = ++markdownSelectionSeq;
+		const frame = markdownFrameRoot();
+		const hasText = frame !== null && selection !== null
+			&& insideFrame(frame, selection.anchorNode)
+			&& insideFrame(frame, selection.focusNode)
+			&& FlrCore.normalizeForMatch(selection.toString()) !== '';
+		if (!hasText) {
+			if (state.mouse !== null || state.markdownMiss) {
+				state.mouse = null;
+				state.markdownMiss = false;
+				notify();
+			}
+			return;
+		}
+		const text = selection.toString();
+		const path = markdownToolbarPath;
+		if (!path) return;
+		fetchMarkdownSource(path).then((source) => {
+			if (seq !== markdownSelectionSeq) return;
+			if (!source) {
+				const changed = state.mouse !== null || !state.markdownMiss;
+				state.mouse = null;
+				state.markdownMiss = true;
+				if (changed) notify();
+				return;
+			}
+			const range = locateInMarkdown(sourceCache.get(path), frame, selection, text);
+			if (!range) {
+				const changed = state.mouse !== null || !state.markdownMiss;
+				state.mouse = null;
+				state.markdownMiss = true;
+				if (changed) notify();
+				return;
+			}
+			state.markdownMiss = false;
+			const next = [Math.min(range.startLine, range.endLine), Math.max(range.startLine, range.endLine)];
+			if (state.mouse === null || state.mouse[0] !== next[0] || state.mouse[1] !== next[1]) {
+				state.mouse = next;
+				notify();
+			}
+		}).catch(() => {
+			if (seq !== markdownSelectionSeq) return;
+			const changed = state.mouse !== null || !state.markdownMiss;
+			state.mouse = null;
+			state.markdownMiss = true;
+			if (changed) notify();
+		});
+	}
+
 	return {
 		subscribe,
 		/** Refcounted document listeners, alive while a toolbar is mounted. */
@@ -624,6 +1000,7 @@ const controller = (() => {
 					state.selected = [];
 					state.anchor = null;
 					state.mouse = null;
+					state.markdownMiss = false;
 					clearHighlight();
 				}
 			};
@@ -648,6 +1025,11 @@ const controller = (() => {
 		isMode() {
 			return state.mode;
 		},
+		/** Whether the last rendered-view alignment refused to locate the pick. */
+		markdownMissed() {
+			return state.markdownMiss;
+		},
+		rendererKind,
 		numbersOn() {
 			return state.numbers;
 		},
@@ -1132,6 +1514,98 @@ const dragger = (() => {
 	};
 })();
 
+/* ----------------------------------------------------- markdown source -- */
+
+const SOURCE_CACHE_TTL_MS = 10000;
+const SOURCE_MAX_CHARS = 1000000;
+/** absolutePath -> { text, fetchedAt, aligner, floor, blocksSig, blockMap } */
+const sourceCache = new Map();
+
+/**
+ * Fetch one previewed file's source text through the host's authenticated
+ * file route (the same `api/file?path=…` the Markdown body serves local
+ * images from; an in-page fetch carries the session cookie). Results are
+ * cached briefly so dragging aligns synchronously after the first event, and
+ * a short TTL keeps a disk edit from outliving the alignment basis. Oversized
+ * or unreadable files answer null: alignment refuses, it never guesses.
+ */
+function fetchMarkdownSource(absolutePath) {
+	if (typeof absolutePath !== 'string' || absolutePath === '') return Promise.resolve(null);
+	const now = Date.now();
+	const cached = sourceCache.get(absolutePath);
+	if (cached && now - cached.fetchedAt < SOURCE_CACHE_TTL_MS) return Promise.resolve(cached.text);
+	try {
+		const url = new URL(`api/file?path=${encodeURIComponent(absolutePath)}`, document.baseURI);
+		return fetch(url, { credentials: 'same-origin' }).then((response) => {
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+			return response.text();
+		}).then((text) => {
+			const usable = typeof text === 'string' && text.length > 0 && text.length <= SOURCE_MAX_CHARS ? text : null;
+			sourceCache.set(absolutePath, {
+				text: usable,
+				fetchedAt: now,
+				aligner: usable === null ? null : FlrCore.createSourceAligner(usable),
+				floor: usable === null ? 0 : FlrCore.leadingFrontmatterLines(usable),
+				blocksSig: '',
+				blockMap: []
+			});
+			return usable;
+		}, () => {
+			sourceCache.set(absolutePath, { text: null, fetchedAt: now, aligner: null, floor: 0, blocksSig: '', blockMap: [] });
+			return null;
+		});
+	} catch {
+		return Promise.resolve(null);
+	}
+}
+
+/** The rendered-Markdown preview frame root, preferring the visible one. */
+function markdownFrameRoot() {
+	const isVisible = (el) => el.getClientRects().length > 0;
+	const frames = [...document.querySelectorAll('[data-document-preview$="markdown"]')];
+	return frames.find(isVisible) ?? frames[0] ?? null;
+}
+
+/** Toolbar-held path of the previewed file, refreshed on every toolbar render. */
+let markdownToolbarPath = null;
+
+/**
+ * Switch the visible preview to the plain-text viewer through its own viewer
+ * menu: click the menu anchor, wait for the portal menu to mount, then click
+ * the fallback item (candidates order puts the plain-text viewer last, and it
+ * is the only one whose title differs from the Markdown anchor). Best-effort
+ * DOM driving of DSH UI: if the portal never mounts or nothing matches, the
+ * menu is folded back and the caller's hint remains the only guidance.
+ */
+function switchToPlainTextView() {
+	const frame = markdownFrameRoot();
+	const anchor = frame?.querySelector('[data-document-viewer-menu]');
+	if (!(anchor instanceof HTMLElement)) return false;
+	const known = new Set(
+		[...document.querySelectorAll('[role="menu"]')].filter((el) => el.getClientRects().length > 0)
+	);
+	anchor.click();
+	let tries = 0;
+	const step = () => {
+		const anchorText = (anchor.textContent ?? '').trim();
+		const items = [...document.querySelectorAll('[role="menu"]')]
+			.filter((el) => el.getClientRects().length > 0 && !known.has(el))
+			.flatMap((menu) => [...menu.querySelectorAll('button')]);
+		const target = items
+			.map((button) => ({ button, text: (button.textContent ?? '').trim() }))
+			.filter((item) => item.text !== '' && item.text !== anchorText)
+			.at(-1);
+		if (target !== undefined) {
+			target.button.click();
+			return;
+		}
+		if (++tries < 12) requestAnimationFrame(step);
+		else anchor.click();
+	};
+	requestAnimationFrame(step);
+	return true;
+}
+
 /* ------------------------------------------------------------ components -- */
 
 /** Session facade captured by apply(); lets action handlers resolve cwd without hooks. */
@@ -1229,6 +1703,7 @@ function ToolbarActions(props) {
 	const t = props.t;
 	const inputActions = props.inputActions;
 	const absolutePath = props.absolutePath;
+	markdownToolbarPath = absolutePath;
 	const latest = React.useRef({ sessionId: props.sessionId, inputActions, absolutePath });
 	latest.current = { sessionId: props.sessionId, inputActions, absolutePath };
 	// Controller reads walk the live preview DOM; keep a DOM surprise from
@@ -1236,13 +1711,23 @@ function ToolbarActions(props) {
 	let lines = [];
 	let mode = false;
 	let numbers = controller.numbersOn();
+	let renderer = 'other';
 	try {
 		lines = inputActions && absolutePath ? controller.currentLines() : [];
 		mode = controller.isMode();
+		renderer = controller.rendererKind();
 	} catch (error) {
 		console.error('[file-line-reference] toolbar state read failed:', error);
 	}
 	const canAdd = lines.length > 0;
+	// The rendered-Markdown viewer exposes no line-bearing DOM at all, so the
+	// button is disabled for a cause the user cannot see: name it in the title
+	// and point at the viewer-menu way out instead of staying silently gray.
+	// A refused alignment (unmatchable selection, changed file) gets its own
+	// wording, so a miss never reads as "the feature is broken".
+	const blockedByMarkdown = !canAdd && renderer === 'markdown';
+	const markdownMiss = blockedByMarkdown && controller.markdownMissed();
+	const markdownTitle = markdownMiss ? t('action.addLinesMarkdownMiss') : t('action.addLinesMarkdownTitle');
 
 	function performInsert() {
 		const { sessionId, inputActions: actions, absolutePath: path } = latest.current;
@@ -1289,8 +1774,8 @@ function ToolbarActions(props) {
 			key: 'add',
 			className: 'flr-tool-btn',
 			type: 'button',
-			title: t('action.addLinesTitle'),
-			'aria-label': t('action.addLines'),
+			title: blockedByMarkdown ? markdownTitle : t('action.addLinesTitle'),
+			'aria-label': blockedByMarkdown ? t('action.addLinesMarkdown') : t('action.addLines'),
 			disabled: !canAdd,
 			// pointerdown reads the drag selection before the browser collapses
 			// it on mousedown; click would already see an empty selection.
@@ -1316,10 +1801,16 @@ function ToolbarActions(props) {
 			key: 'mode',
 			className: 'flr-tool-btn',
 			type: 'button',
-			title: t('action.lineModeHint'),
-			'aria-label': t('action.lineMode'),
+			// In the rendered-Markdown view there are no rows to pick, so this
+			// button becomes the one-click way out: drive the viewer menu to
+			// the plain-text viewer, where line picking works as documented.
+			title: blockedByMarkdown ? markdownTitle : t('action.lineModeHint'),
+			'aria-label': blockedByMarkdown ? t('action.switchPlainText') : t('action.lineMode'),
 			'aria-pressed': mode,
-			onClick: () => controller.setMode(!mode)
+			onClick: () => {
+				if (blockedByMarkdown) switchToPlainTextView();
+				else controller.setMode(!mode);
+			}
 		}, ICON_ROWS),
 		h('button', {
 			key: 'numbers',
