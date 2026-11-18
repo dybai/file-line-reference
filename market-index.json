@@ -1,12 +1,12 @@
 {
   "format": 1,
   "title": {
-    "en": "dybai's dsh plugins",
-    "zh-cn": "dybai 的 dsh 插件"
+    "en": "File Line Reference",
+    "zh-cn": "文件行引用"
   },
   "description": {
-    "en": "Personal plugin market for the DeepSeek Harness.",
-    "zh-cn": "DeepSeek Harness 个人插件市场。"
+    "en": "Market index for @dybai/file-line-reference: select file lines and reference them into the chat composer.",
+    "zh-cn": "@dybai/file-line-reference 插件的市场索引：把选中的文件行引用进对话输入框。"
   },
   "metadata": {
     "categories": {
@@ -28,8 +28,8 @@
         "zh-cn": "文件行引用"
       },
       "description": {
-        "en": "Select file lines and insert @path:start-end references into the chat composer; drag files or folders from the Files panel into the composer as @path mentions; click a reference chip to reopen the file at its start line.",
-        "zh-cn": "选中文件的若干行，把 @路径:起-止 行范围引用插入对话输入框；也能把 Files 面板中的文件或目录拖到输入框，插入 @路径 引用；点击消息中的引用 chip 回到起始行。"
+        "en": "Select file lines and insert @path:start-end references into the chat composer; reference selected lines from the dsh-editor editing area the same way; drag files or folders from the Files panel into the composer as @path mentions; click a reference chip to reopen the file at its start line.",
+        "zh-cn": "选中文件的若干行，把 @路径:起-止 行范围引用插入对话输入框；在 dsh-editor 编辑区选中若干行后同样插入行引用；也能把 Files 面板中的文件或目录拖到输入框，插入 @路径 引用；点击消息中的引用 chip 回到起始行。"
       },
       "author": "dybai",
       "homepage": "https://github.com/dybai/file-line-reference",
